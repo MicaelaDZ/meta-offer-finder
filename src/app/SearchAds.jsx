@@ -2,6 +2,9 @@
 "use client";
 
 import { useRef, useState } from "react";
+import OfferResults, { OfferCard } from "./OfferResults";
+import { runDiscoveryWorkflow } from "../lib/discovery-workflow.mjs";
+import { partitionOffers } from "../lib/result-presentation.mjs";
 import { COUNTRIES, LANGUAGES, LIMITS } from "../lib/discovery.mjs";
 import { deduplicateRanking, sortRanking } from "../lib/ranking.mjs";
 import { verificationBatch, CANCELLATION_NOTICE, LANGUAGE_NOTICE } from "../lib/verification.mjs";
@@ -9,11 +12,12 @@ import { verificationBatch, CANCELLATION_NOTICE, LANGUAGE_NOTICE } from "../lib/
 
 export default function SearchAds() {
   const [keyword, setKeyword] = useState("");
-  const [mode, setMode] = useState("automatic");
   const [country, setCountry] = useState("AR");
   const [language, setLanguage] = useState("all");
   const [progress, setProgress] = useState("");
   const [warnings, setWarnings] = useState([]);
+  const [diagnostics, setDiagnostics] = useState([]);
+  const operation = useRef(false);
   const [searches, setSearches] = useState([]);
   const controller = useRef(null);
   const [ads, setAds] = useState([]);
@@ -31,6 +35,7 @@ export default function SearchAds() {
   const [grouping, setGrouping] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [manualResults, setManualResults] = useState(false);
   const [error, setError] = useState("");
 
   // Controlamos qué listados largos se muestran.
@@ -87,81 +92,54 @@ const [rankingSort, setRankingSort] = useState("evidencia");
     }));
   }
 
-  async function automaticPipeline(data) {
-    let foundGroups = [], pages = [], matches = [];
-    const notes = [];
-    async function step(label, action) {
-      if (controller.current?.signal.aborted) throw new Error("Exploración cancelada.");
-      setProgress(label);
-      try { await action(); }
-      catch (error) {
-        if (controller.current?.signal.aborted) throw new Error("Exploración cancelada.");
-        notes.push(`${label}: ${error.message}`);
-        setWarnings(previous => [...previous, notes.at(-1)]);
-      }
-    }
-    if (!data.ads?.length) return;
-    await step("Agrupando anuncios", async () => {
-      const result = await post("/api/group", { ads: data.ads });
-      foundGroups = result.groups || [];
-      setGroups(foundGroups);
-    });
-    await step("Analizando hasta 5 anuncios con IA", async () => {
-      const representatives = foundGroups.length ? foundGroups.map(group => data.ads.find(ad => ad.id === group.ads[0]?.id)).filter(Boolean) : data.ads;
-      const result = await post("/api/analyze", { ads: representatives.slice(0, LIMITS.analyses) });
-      setAnalyses(Object.fromEntries((result.results || []).map(item => [item.id, item])));
-      const failures = result.results.filter(item => item.error).length;
-      if (failures) throw new Error(`${failures} análisis sin resultado. El ranking conserva solamente evidencia observable.`);
-    });
-    if (data.externalLinks?.length) {
-      await step("Verificando hasta 5 páginas candidatas", async () => {
-        const result = await post("/api/verify-pages", { urls: data.externalLinks.slice(0, LIMITS.pages) });
-        pages = result.results || [];
-        setVerifiedPages(pages);
-        setVerificationCursor(Math.min(data.externalLinks.length, LIMITS.pages));
-        const failures = pages.filter(page => ["error", "no_accesible"].includes(page.status)).length;
-        if (failures) throw new Error(`${failures} páginas no se pudieron verificar.`);
-      });
-      await step("Asociando páginas por URL y nombre de producto", async () => {
-        const result = await post("/api/match-pages", { ads: data.ads, pages });
-        matches = result.matches || [];
-        setPageMatches(matches);
-      });
-    }
-    if (foundGroups.length) await step("Calculando ranking de evidencia", async () => {
-      const result = await post("/api/rank", { groups: foundGroups, pages, matches });
-      setRanking(result.ranking || []);
-    });
+  function updateWorkflow(update) {
+    if (update.ads) setAds(update.ads);
+    if (update.groups) setGroups(update.groups);
+    if (update.analyses) setAnalyses(update.analyses);
+    if (update.pages) setVerifiedPages(update.pages);
+    if (update.matches) setPageMatches(update.matches);
+    if (update.ranking) setRanking(update.ranking);
+    if (update.verificationCursor !== undefined) setVerificationCursor(update.verificationCursor);
   }
 
-  async function searchAds(event) {
+  async function searchAds(event, manual = false) {
     event.preventDefault();
-    if (mode === "manual" && !keyword.trim()) return;
+    if (operation.current || (manual && !keyword.trim())) return;
+    operation.current = true;
     controller.current = new AbortController();
-    setLoading(true);
-    setError(""); setWarnings([]); setSearches([]);
+    setLoading(true); setManualResults(manual);
+    setError(""); setWarnings([]); setDiagnostics([]); setSearches([]);
     setAds([]); setGroups([]); setAnalyses({}); setExternalLinks([]);
     setVerificationCursor(0); setVerifiedPages([]); setPageMatches([]); setRanking([]); setSearched(false);
     setShowPages(false); setShowGroups(false); setShowAds(false);
-    setProgress(mode === "automatic" ? "Explorando seis categorías de productos digitales" : "Buscando anuncios");
+    setProgress("Buscando anuncios");
     try {
-      const data = await post(mode === "automatic" ? "/api/discover" : "/api/search", { keyword: keyword.trim(), country, language }, 140000);
+      const data = await post(manual ? "/api/search" : "/api/discover", { ...(manual ? { keyword: keyword.trim() } : {}), country, language }, 140000);
       setAds(data.ads || []);
       setExternalLinks(data.externalLinks || []);
       setSearches(data.searches || []);
-      setWarnings(data.warnings || []);
+      setDiagnostics(data.warnings || []);
+      if (data.searches?.some(search => search.error)) setWarnings(["Algunas búsquedas no pudieron completarse. Conservamos los resultados disponibles."]);
       setSearched(true);
-      if (mode === "automatic") await automaticPipeline(data);
+      if (!manual) await runDiscoveryWorkflow(data, {
+        post, signal: controller.current.signal, onProgress: setProgress, onUpdate: updateWorkflow,
+        onWarning: (message, detail) => {
+          setWarnings(previous => [...new Set([...previous, message])]);
+          setDiagnostics(previous => [...previous, detail]);
+        },
+      });
     } catch (error) {
-      setSearches(error.details?.searches || []);
-      setError(controller.current?.signal.aborted ? "Exploración cancelada. Sólo se conservan las respuestas ya recibidas; la búsqueda en curso no se recupera." : error.message);
+      if (error.details?.searches) setSearches(error.details.searches);
+      setDiagnostics(previous => [...previous, error.message]);
+      setError(controller.current?.signal.aborted ? "Exploración cancelada. Sólo se conservan las respuestas ya recibidas; la búsqueda en curso no se recupera." : "No se pudo completar la búsqueda. Revisá el detalle en Opciones avanzadas e intentá nuevamente.");
     } finally {
-      setProgress(""); setLoading(false); controller.current = null;
+      setProgress(""); setLoading(false); controller.current = null; operation.current = false;
     }
   }
 
   async function groupAds() {
-    if (ads.length === 0) return;
+    if (operation.current || ads.length === 0) return;
+    operation.current = true;
 
     setGrouping(true);
     setError("");
@@ -182,12 +160,13 @@ const [rankingSort, setRankingSort] = useState("evidencia");
     } catch (err) {
       setError(err.message);
     } finally {
-      setGrouping(false);
+      setGrouping(false); operation.current = false;
     }
   }
 
   async function analyzeAds() {
-    if (ads.length === 0) return;
+    if (operation.current || ads.length === 0) return;
+    operation.current = true;
 
     setAnalyzing(true);
     setError("");
@@ -215,12 +194,13 @@ const [rankingSort, setRankingSort] = useState("evidencia");
     } catch (err) {
       setError(err.message);
     } finally {
-      setAnalyzing(false);
+      setAnalyzing(false); operation.current = false;
     }
   }
 
   async function verifyPages() {
-    if (externalLinks.length === 0) return;
+    if (operation.current || externalLinks.length === 0) return;
+    operation.current = true;
     setVerifying(true); setError(""); setRanking([]);
     const batch = verificationBatch(externalLinks, verificationCursor);
     const previousPages = batch.start === 0 ? [] : verifiedPages;
@@ -232,7 +212,7 @@ const [rankingSort, setRankingSort] = useState("evidencia");
       const matchData = await post("/api/match-pages", { ads, pages: allPages });
       setPageMatches(matchData.matches || []);
     } catch (error) { setError(error.message); }
-    finally { setVerifying(false); }
+    finally { setVerifying(false); operation.current = false; }
   }
 
   async function generateRanking() {
@@ -241,6 +221,8 @@ const [rankingSort, setRankingSort] = useState("evidencia");
       return;
     }
 
+    if (operation.current) return;
+    operation.current = true;
     setRankingLoading(true);
     setError("");
     setRanking([]);
@@ -263,7 +245,7 @@ const [rankingSort, setRankingSort] = useState("evidencia");
     } catch (err) {
       setError(err.message);
     } finally {
-      setRankingLoading(false);
+      setRankingLoading(false); operation.current = false;
     }
   }
 
@@ -314,55 +296,49 @@ const nextPages = verificationBatch(externalLinks, verificationCursor);
     }
   }
 
+  const discarded = partitionOffers(uniqueRanking).discarded;
   return (
-    <section className="mb-10">
-      <h2 className="mb-4 text-xl font-semibold">
-        Descubrir productos digitales pagos
-      </h2>
-
-      <form
-        onSubmit={searchAds}
-        className="flex flex-col gap-3 sm:flex-row"
-      >
-        <label className="text-sm">Modo
-          <select aria-label="Modo de búsqueda" value={mode} onChange={event => setMode(event.target.value)} disabled={busy} className="block rounded-lg bg-slate-900 p-3">
-            <option value="automatic">Descubrimiento automático</option>
-            <option value="manual">Búsqueda manual</option>
-          </select>
-        </label>
-        <label className="text-sm">País
-          <select aria-label="País" value={country} onChange={event => setCountry(event.target.value)} disabled={busy} className="block rounded-lg bg-slate-900 p-3">
+    <section>
+      <form onSubmit={searchAds} className="flex flex-col gap-4 sm:flex-row sm:items-end" aria-label="Descubrimiento automático">
+        <label className="flex-1 text-sm">País
+          <select aria-label="País" value={country} onChange={event => setCountry(event.target.value)} disabled={busy} className="mt-2 block w-full rounded-lg border border-slate-700 bg-slate-900 p-3">
             {Object.entries(COUNTRIES).map(([code, name]) => <option key={code} value={code}>{name}</option>)}
           </select>
         </label>
-        <label className="text-sm">Idioma del anuncio
-          <select aria-label="Idioma del anuncio" value={language} onChange={event => setLanguage(event.target.value)} disabled={busy} className="block rounded-lg bg-slate-900 p-3">
+        <label className="flex-1 text-sm">Idioma
+          <select aria-label="Idioma del anuncio" value={language} onChange={event => setLanguage(event.target.value)} disabled={busy} className="mt-2 block w-full rounded-lg border border-slate-700 bg-slate-900 p-3">
             {Object.entries(LANGUAGES).map(([code, name]) => <option key={code} value={code}>{name}</option>)}
           </select>
         </label>
-        {mode === "manual" && <input aria-label="Palabra clave" type="text" required value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="Ej: recetario digital" maxLength={100} disabled={busy} className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-white" />}
-        <button type="submit" disabled={busy} className="rounded-lg bg-cyan-500 px-6 py-3 font-semibold text-slate-950 disabled:opacity-50">
-          {loading ? "Explorando..." : mode === "automatic" ? "Descubrir productos" : "Buscar"}
-        </button>
-        {loading && <button type="button" onClick={() => controller.current?.abort()} className="rounded-lg border border-slate-600 p-3">Cancelar</button>}
+        <button type="submit" disabled={busy} className="rounded-lg bg-cyan-500 px-6 py-3 font-semibold text-slate-950 disabled:opacity-50">Descubrir oportunidades</button>
       </form>
-      <p className="mt-3 text-sm text-slate-400">
-        La exploración usa seis búsquedas de ebooks, cursos, plantillas, imprimibles, packs y software; no cubre toda la biblioteca.
-        Hasta 100 anuncios repartidos entre las seis categorías, 5 análisis con IA y 5 páginas por ejecución automática. La verificación manual permite continuar en lotes de 5.
-        Los enlaces sin asociación comprobada permanecen como candidatos.
-      </p>
-      <p className="mt-2 text-sm text-slate-400">{LANGUAGE_NOTICE}</p>
-      <p className="mt-2 text-sm text-slate-400">{CANCELLATION_NOTICE}</p>
-      {progress && <p role="status" className="mt-4 text-cyan-300">{progress}…</p>}
-      {warnings.length > 0 && <ul className="mt-4 text-amber-300">{warnings.map((warning, i) => <li key={i}>{warning}</li>)}</ul>}
-      {searches.length > 0 && <details className="mt-4 text-sm text-slate-300"><summary>Cobertura y errores por categoría ({searches.length}/6 búsquedas)</summary><ul>{searches.map(search => <li key={search.category}>{search.category}: {search.total} anuncios recuperados{search.error ? ` — Error: ${search.error}` : ""}{search.warnings?.map(w => ` — ${w}`).join("")}</li>)}</ul></details>}
+      {loading && <div className="mt-5 rounded-lg border border-cyan-900 bg-slate-900 p-4">
+        <p role="status" aria-live="polite" className="text-cyan-300">{progress}…</p>
+        <button type="button" onClick={() => controller.current?.abort()} className="mt-3 rounded-lg border border-slate-600 px-4 py-2">Cancelar</button>
+        <p className="mt-3 text-xs text-slate-400">{CANCELLATION_NOTICE}</p>
+      </div>}
+      {error && <p role="alert" className="mt-4 rounded-lg bg-red-950 p-4 text-red-300">{error}</p>}
+      {warnings.length > 0 && <aside aria-label="Advertencias" className="mt-4 text-sm text-amber-200"><ul className="space-y-2">{warnings.map((warning, i) => <li key={i}>{warning}</li>)}</ul></aside>}
+      {ranking.length > 0 && <OfferResults offers={sortedRanking} groups={groups} />}
+      {searched && !loading && !ranking.length && <p role="status" className="mt-6 text-slate-300">{ads.length === 0 ? "No se recuperaron anuncios en esta exploración. Esto no confirma que no existan ofertas." : manualResults ? "Búsqueda manual completada. Podés continuar el análisis en Opciones avanzadas." : "Los anuncios recuperados están disponibles en Opciones avanzadas. No se pudo preparar un ranking automático."}</p>}
 
-      {error && (
-        <p className="mt-4 rounded-lg bg-red-950 p-4 text-red-300">
-          {error}
-        </p>
-      )}
-
+      <details className="mt-10 rounded-xl border border-slate-700 p-5">
+        <summary className="cursor-pointer font-semibold">Opciones avanzadas</summary>
+        <div className="mt-5 space-y-5">
+          <form onSubmit={event => searchAds(event, true)} className="flex flex-col gap-3 sm:flex-row" aria-label="Búsqueda manual">
+            <input aria-label="Palabra clave" type="text" required value={keyword} onChange={event => setKeyword(event.target.value)} maxLength={100} disabled={busy} placeholder="Ej: recetario digital" className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-4 py-3" />
+            <button type="submit" disabled={busy} className="rounded-lg border border-cyan-600 px-5 py-3 disabled:opacity-50">Buscar</button>
+          </form>
+          <p className="text-sm text-slate-400">La búsqueda manual usa el país y el idioma seleccionados arriba.</p>
+          <p className="text-sm text-slate-400">{LANGUAGE_NOTICE}</p>
+          <p className="text-sm text-slate-400">{CANCELLATION_NOTICE}</p>
+          <p className="text-sm text-slate-400">El modo automático explora seis categorías, hasta 100 anuncios, 5 análisis con IA y 5 páginas. La verificación manual continúa en lotes de 5. La cantidad y antigüedad de anuncios no confirman ventas.</p>
+          {searches.length > 0 && <div><h2 className="font-semibold">Cobertura y errores por categoría ({searches.length}/6 búsquedas)</h2><ul className="text-sm text-slate-400">{searches.map(search => <li key={search.category}>{search.category}: {search.total} anuncios recuperados{search.error ? ` — ${search.error}` : ""}{search.warnings?.map(w => ` — ${w}`).join("")}</li>)}</ul></div>}
+          {diagnostics.length > 0 && <div><h2 className="font-semibold">Diagnósticos</h2><ul className="text-sm text-slate-400">{diagnostics.map((detail, i) => <li key={i}>{detail}</li>)}</ul></div>}
+          {ranking.length > 0 && <div className="flex flex-wrap gap-3">
+            <label>Filtrar oportunidades:<select aria-label="Filtrar oportunidades" value={rankingFilter} onChange={event => setRankingFilter(event.target.value)} className="ml-2 rounded bg-slate-900 p-2"><option value="todos">Todas</option><option value="digitales">Digitales pagos</option><option value="anuncios">Candidatos por anuncio</option><option value="revision">Sin evidencia suficiente</option><option value="otros">Descartados</option></select></label>
+            <label>Ordenar por:<select aria-label="Ordenar por" value={rankingSort} onChange={event => setRankingSort(event.target.value)} className="ml-2 rounded bg-slate-900 p-2"><option value="evidencia">Prioridad de evidencia</option><option value="puntaje">Mayor puntaje</option><option value="antiguedad">Mayor antigüedad</option><option value="anuncios">Más anuncios</option></select></label>
+          </div>}
       {searched && (
         <div className="mt-5 flex flex-wrap items-center gap-3">
           <p className="text-slate-300">
@@ -436,161 +412,8 @@ const nextPages = verificationBatch(externalLinks, verificationCursor);
 
       {externalLinks.length > 0 && <p className="mt-2 text-sm text-slate-400">Páginas procesadas: {verificationCursor}/{externalLinks.length}. Los errores no equivalen a páginas verificadas.</p>}
 
-      {/* RANKING PRINCIPAL */}
 
-      {ranking.length > 0 && (
-        <div className="mt-8">
-          <h3 className="mb-4 text-xl font-semibold">
-            Ranking equilibrado de oportunidades
-          </h3>
-
-          <p className="mb-4 text-sm text-slate-400">
-            Puntaje de evidencia observable, no de
-            ventas ni rentabilidad. Las ofertas sin
-            página verificada permanecen pendientes.
-          </p>
-          
-<div className="mb-5 flex flex-wrap items-center gap-3">
-  <label
-    htmlFor="ranking-filter"
-    className="text-sm text-slate-300"
-  >
-    Filtrar oportunidades:
-  </label>
-
-  <select
-    id="ranking-filter"
-    value={rankingFilter}
-    onChange={(event) =>
-      setRankingFilter(event.target.value)
-    }
-    className="rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white"
-  >
-    <option value="todos">Todas</option>
-    <option value="digitales">Digitales pagos</option>
-    <option value="anuncios">Candidatos por anuncio</option>
-    <option value="otros">Físicos, servicios y gratuitos</option>
-    <option value="revision">Sin evidencia suficiente</option>
-  </select>
-
-  <span className="text-sm text-cyan-400">
-    {filteredRanking.length} oportunidades
-  </span>
-  
-<label
-  htmlFor="ranking-sort"
-  className="text-sm text-slate-300"
->
-  Ordenar por:
-</label>
-
-<select
-  id="ranking-sort"
-  value={rankingSort}
-  onChange={(event) =>
-    setRankingSort(event.target.value)
-  }
-  className="rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white"
->
-  <option value="evidencia">Prioridad de evidencia</option>
-  <option value="puntaje">Mayor puntaje</option>
-  <option value="antiguedad">Mayor antigüedad</option>
-  <option value="anuncios">Más anuncios</option>
-</select>
-
-</div>
-
-
-          <div className="space-y-4">
-          {sortedRanking.map((offer, index) => (
-              <div
-                key={offer.groupId || index}
-                className="rounded-xl border border-amber-800 bg-slate-900 p-5"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-semibold text-amber-400">
-                      POSICIÓN #{index + 1}
-                    </p>
-
-                    <h4 className="mt-1 text-lg font-semibold text-white">
-                      {offer.advertiser}
-                    </h4>
-
-                    <p className="mt-1 text-sm text-slate-300">
-                      {offer.product ||
-                        "Producto pendiente de verificar"}
-                    </p>
-                    {offer.groupedResults > 1 && (
-  <p className="mt-2 text-xs text-violet-300">
-    {offer.groupedResults} grupos
-    del mismo producto unificados
-  </p>
-)}
-                    <p className="mt-2 text-xs text-slate-400">
-                      {offer.status ===
-                      "candidato_digital_pago"
-                        ? "Candidato digital pago con página asociada"
-                        : offer.status ===
-                            "candidato_por_anuncio"
-                          ? "Candidato digital por anuncio — página pendiente"
-                          : ["posible_producto_fisico", "posible_servicio", "posible_digital_gratuito"].includes(offer.status) ? getPageStatusLabel(offer.status) : "Sin evidencia suficiente — pendiente de investigación"}
-                    </p>
-                  </div>
-
-                  <div className="text-right">
-                    <p className="text-3xl font-bold text-amber-400">
-                      {offer.score}/100
-                    </p>
-                    <p className="text-xs text-slate-400">
-                      Puntos de evidencia
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-                  <p>
-                    Antigüedad:{" "}
-                    {offer.ageDays ?? "Desconocida"}{" "}
-                    días
-                  </p>
-
-                  <p>
-                    Anuncios encontrados:{" "}
-                    {offer.adsCount}
-                  </p>
-
-                  <p>
-                    Compra online:{" "}
-                    {offer.hasPurchaseSignal
-                      ? "Señal detectada"
-                      : "No verificada"}
-                  </p>
-
-                  <p>
-                    Entrega automática:{" "}
-                    {offer.hasDeliverySignal
-                      ? "Mencionada"
-                      : "No verificada"}
-                  </p>
-                </div>
-
-                {offer.url && (
-                  <a
-                    href={offer.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-4 inline-block text-sm text-cyan-400 hover:underline"
-                  >
-                    Ver página de venta ↗
-                  </a>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
+          {discarded.length > 0 && <section aria-label="Productos descartados"><h2 className="mb-3 text-lg font-semibold">Productos descartados ({discarded.length})</h2><p className="mb-3 text-sm text-slate-400">Señales de producto físico, servicio o recurso gratuito; no se presentan como oportunidades digitales pagas.</p><div className="space-y-3">{discarded.map(offer => <div key={offer.groupId}><p className="text-sm text-slate-400">{getPageStatusLabel(offer.status)}</p><OfferCard offer={offer} group={groups.find(group => group.groupId === offer.groupId)} /></div>)}</div></section>}
       {/* CONTROLES PARA LOS LISTADOS DETALLADOS */}
 
       {(verifiedPages.length > 0 ||
@@ -936,6 +759,9 @@ const nextPages = verificationBatch(externalLinks, verificationCursor);
           })}
         </div>
       )}
+
+        </div>
+      </details>
     </section>
   );
 }
