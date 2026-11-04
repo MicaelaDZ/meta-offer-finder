@@ -21,13 +21,9 @@ function getHostname(value) {
 function hostnameMatches(adText, hostname) {
   if (!hostname) return false;
 
-  const normalizedAd = normalizeText(adText)
-    .replace(/\\\./g, ".")
-    .replace(/\s+/g, "");
-
-  const normalizedHostname = normalizeText(hostname);
-
-  return normalizedAd.includes(normalizedHostname);
+  const normalizedAd = normalizeText(adText).replace(/\\\./g, ".");
+  const escaped = hostname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[\\s/(@])(?:www\\.)?${escaped}(?=$|[\\s/:?#)])`, "i").test(normalizedAd);
 }
 
 export async function POST(request) {

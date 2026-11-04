@@ -1,3 +1,4 @@
+import { classifyOffer } from "../../../lib/evidence.mjs";
 
 import { NextResponse } from "next/server";
 
@@ -34,50 +35,6 @@ function normalize(value) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-function detectDigitalOffer(copy) {
-  const text = normalize(copy);
-
-  const digitalPatterns = [
-    /\bebook\b/,
-    /\be book\b/,
-    /\bpdf\b/,
-    /\brecetario digital\b/,
-    /\bcurso grabado\b/,
-    /\bcurso online\b/,
-    /\bcurso de \d+ clases en video\b/,
-    /\bclases en video\b/,
-    /\bplantillas digitales\b/,
-    /\bdescargable\b/,
-    /\bimprimible\b/,
-    /\bacceso inmediato\b/,
-  ];
-
-  const paymentPatterns = [
-    /\bprecio\b/,
-    /\bcomprar\b/,
-    /\bcompra\b/,
-    /\bpago unico\b/,
-    /\bun solo pago\b/,
-    /\bsolo \$\s*[\d.,]+/,
-    /\bpor solo \$\s*[\d.,]+/,
-    /\b\d+\s*% off\b/,
-  ];
-
-  const hasDigitalSignal = digitalPatterns.some(
-    (pattern) => pattern.test(text)
-  );
-
-  const hasPaymentSignal = paymentPatterns.some(
-    (pattern) => pattern.test(text)
-  );
-
-  return {
-    hasDigitalSignal,
-    hasPaymentSignal,
-    isCandidate: hasDigitalSignal && hasPaymentSignal,
-  };
-}
-
 export async function POST(request) {
   try {
     const body = await request.json();
@@ -101,11 +58,12 @@ export async function POST(request) {
         (match) =>
           match.matchStatus ===
             "coincidencia_por_dominio" &&
-          normalize(match.advertiser) === advertiser
+          normalize(match.advertiser) === advertiser &&
+          group.ads?.some(ad => match.matchedAdIds?.includes(ad.id))
       );
 
       const matchedPage = pages.find((page) =>
-        matchingLinks.some(
+        page.status !== "error" && page.status !== "no_accesible" && page.httpStatus >= 200 && page.httpStatus < 400 && matchingLinks.some(
           (match) =>
             match.url === page.url ||
             match.url === page.finalUrl
@@ -152,23 +110,19 @@ export async function POST(request) {
         associationScore;
 
      
-const adSignals = detectDigitalOffer(
-  group.exampleCopy
-);
-
+const adSignals = classifyOffer(group.exampleCopy);
+const excluded = ["posible_producto_fisico", "posible_servicio", "posible_digital_gratuito"];
+const pageExcluded = matchedPage && (excluded.includes(matchedPage.status) || matchedPage.conflict);
 let status = "sin_evidencia_suficiente";
-
-if (
-  matchedPage?.hasDigitalSignal &&
-  matchedPage?.hasPurchaseSignal &&
-  matchedPage?.pricesFound?.length > 0
-) {
+if (pageExcluded || excluded.includes(adSignals.classification) || adSignals.conflict) {
+  status = pageExcluded ? (matchedPage.conflict ? "sin_evidencia_suficiente" : matchedPage.status) : adSignals.classification;
+} else if (matchedPage?.status === "candidato_digital_pago") {
   status = "candidato_digital_pago";
 } else if (adSignals.isCandidate) {
   status = "candidato_por_anuncio";
 }
 
-
+      const excludedFromRanking = excluded.includes(status) || adSignals.conflict || Boolean(pageExcluded);
       return {
         groupId: group.groupId,
         advertiser: group.advertiser,
@@ -177,7 +131,7 @@ if (
           matchedPage?.url ||
           null,
         status,
-        score,
+        score: excludedFromRanking ? 0 : score,
         adSignals,
         adsCount: group.adsCount,
         ageDays: group.ageDays,
@@ -191,11 +145,11 @@ if (
         pricesFound:
           matchedPage?.pricesFound || [],
         scoreBreakdown: {
-          digitalPurchase: digitalPurchaseScore,
-          delivery: deliveryScore,
-          age: ageScore,
-          ads: adsScore,
-          association: associationScore,
+          digitalPurchase: excludedFromRanking ? 0 : digitalPurchaseScore,
+          delivery: excludedFromRanking ? 0 : deliveryScore,
+          age: excludedFromRanking ? 0 : ageScore,
+          ads: excludedFromRanking ? 0 : adsScore,
+          association: excludedFromRanking ? 0 : associationScore,
         },
       };
     });
