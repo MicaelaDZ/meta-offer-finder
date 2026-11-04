@@ -1,7 +1,7 @@
 
 import { NextResponse } from "next/server";
 import { Ollama } from "ollama";
-import { classifyOffer } from "../../../lib/evidence.mjs";
+import { classifyAd } from "../../../lib/evidence.mjs";
 const ollama = new Ollama({ fetch: (url, options = {}) => fetch(url, { ...options, signal: AbortSignal.any([AbortSignal.timeout(8000), ...(options.signal ? [options.signal] : [])]) }) });
 const analysisKey = Symbol.for("meta-offer-finder.analysis");
 
@@ -136,7 +136,7 @@ Respondé únicamente JSON:
           ? analysis.estadoPago
           : "pago_no_verificado";
 
-        const observed = classifyOffer(ad.copy);
+        const observed = classifyAd(ad);
 
         results.push({
           id: ad.id,

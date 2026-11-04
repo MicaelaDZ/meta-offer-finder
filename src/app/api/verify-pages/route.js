@@ -2,6 +2,7 @@
 import { isIP } from "node:net";
 import { NextResponse } from "next/server";
 import { launchBrowser, acquireBrowserWork } from "../../../lib/browser.mjs";
+import { extractPageEvidence } from "../../../lib/page-evidence.mjs";
 import { classifyOffer } from "../../../lib/evidence.mjs";
 
 function isAllowedUrl(value) {
@@ -93,11 +94,9 @@ export async function POST(request) {
 
         const title = await page.title();
 
-        const text = (
-          await page.locator("body").innerText()
-        ).slice(0, 20000);
-
-        const signals = classifyOffer(text);
+        const evidence = await page.evaluate(extractPageEvidence);
+        const text = evidence.evidenceText;
+        const signals = classifyOffer(text, { incomplete: evidence.textTruncated });
 
         const httpStatus = response?.status() ?? null;
 
@@ -111,6 +110,7 @@ const status = httpStatus && httpStatus >= 400 ? "no_accesible" : signals.classi
           httpStatus,
           status,
           ...signals,
+          ...evidence,
           textPreview: text.slice(0, 500),
         });
       } catch (error) {

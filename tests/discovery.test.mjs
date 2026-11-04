@@ -62,7 +62,7 @@ test('discovery stops at ad budget, elapsed budget and cancellation', async () =
   let calls = 0;
   const search = async () => { calls++; return { ads: Array.from({ length: 150 }, (_, i) => ({ id: String(i + 1) })) }; };
   assert.equal((await discover({ country: 'AR', language: 'all' }, search)).ads.length, LIMITS.ads);
-  assert.equal(calls, 1);
+  assert.equal(calls, 6);
   let clock = 0;
   const timed = await discover({ country: 'AR', language: 'all' }, async () => { clock = LIMITS.discoveryMs; return { ads: [] }; }, { now: () => clock, pause: async () => {} });
   assert.equal(timed.searches.length, 1); assert.ok(timed.partial);

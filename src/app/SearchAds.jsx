@@ -3,84 +3,10 @@
 
 import { useRef, useState } from "react";
 import { COUNTRIES, LANGUAGES, LIMITS } from "../lib/discovery.mjs";
+import { deduplicateRanking, sortRanking } from "../lib/ranking.mjs";
+import { verificationBatch, CANCELLATION_NOTICE, LANGUAGE_NOTICE } from "../lib/verification.mjs";
 
 
-function normalizeOpportunityText(value) {
-    return String(value || "")
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-  
-  function getOpportunityKey(offer) {
-    const advertiser = normalizeOpportunityText(
-      offer.advertiser
-    );
-  
-    let pageKey = "";
-  
-    if (offer.url) {
-      try {
-        const url = new URL(offer.url);
-        const hostname = url.hostname
-          .toLowerCase()
-          .replace(/^www\./, "");
-  
-        const pathname = url.pathname
-          .replace(/\/+$/, "")
-          .toLowerCase();
-  
-        pageKey = `${hostname}${pathname}`;
-      } catch {
-        pageKey = normalizeOpportunityText(
-          offer.url
-        );
-      }
-    }
-  
-    if (pageKey) {
-      return `${advertiser}|${pageKey}`;
-    }
-  
-    return `${advertiser}|${normalizeOpportunityText(
-      offer.product || offer.groupId
-    )}`;
-  }
-  
-  function deduplicateRanking(ranking) {
-    const unique = new Map();
-  
-    for (const offer of ranking) {
-      const key = getOpportunityKey(offer);
-      const existing = unique.get(key);
-  
-      if (!existing) {
-        unique.set(key, {
-          ...offer,
-          groupedResults: 1,
-        });
-        continue;
-      }
-  
-      const best =
-        Number(offer.score || 0) >
-        Number(existing.score || 0)
-          ? offer
-          : existing;
-  
-      unique.set(key, {
-        ...best,
-        groupedResults:
-          existing.groupedResults + 1,
-      });
-    }
-  
-    return [...unique.values()];
-  }
-
-  
 export default function SearchAds() {
   const [keyword, setKeyword] = useState("");
   const [mode, setMode] = useState("automatic");
@@ -95,6 +21,7 @@ export default function SearchAds() {
   const [groups, setGroups] = useState([]);
   const [externalLinks, setExternalLinks] = useState([]);
   const [verifiedPages, setVerifiedPages] = useState([]);
+  const [verificationCursor, setVerificationCursor] = useState(0);
   const [pageMatches, setPageMatches] = useState([]);
   const [ranking, setRanking] = useState([]);
 
@@ -113,7 +40,7 @@ export default function SearchAds() {
   
 const [rankingFilter, setRankingFilter] = useState("todos");
 
-const [rankingSort, setRankingSort] = useState("puntaje");
+const [rankingSort, setRankingSort] = useState("evidencia");
 
 
   const busy =
@@ -191,10 +118,11 @@ const [rankingSort, setRankingSort] = useState("puntaje");
         const result = await post("/api/verify-pages", { urls: data.externalLinks.slice(0, LIMITS.pages) });
         pages = result.results || [];
         setVerifiedPages(pages);
+        setVerificationCursor(Math.min(data.externalLinks.length, LIMITS.pages));
         const failures = pages.filter(page => ["error", "no_accesible"].includes(page.status)).length;
         if (failures) throw new Error(`${failures} páginas no se pudieron verificar.`);
       });
-      await step("Asociando páginas por evidencia de dominio", async () => {
+      await step("Asociando páginas por URL y nombre de producto", async () => {
         const result = await post("/api/match-pages", { ads: data.ads, pages });
         matches = result.matches || [];
         setPageMatches(matches);
@@ -213,7 +141,7 @@ const [rankingSort, setRankingSort] = useState("puntaje");
     setLoading(true);
     setError(""); setWarnings([]); setSearches([]);
     setAds([]); setGroups([]); setAnalyses({}); setExternalLinks([]);
-    setVerifiedPages([]); setPageMatches([]); setRanking([]); setSearched(false);
+    setVerificationCursor(0); setVerifiedPages([]); setPageMatches([]); setRanking([]); setSearched(false);
     setShowPages(false); setShowGroups(false); setShowAds(false);
     setProgress(mode === "automatic" ? "Explorando seis categorías de productos digitales" : "Buscando anuncios");
     try {
@@ -226,7 +154,7 @@ const [rankingSort, setRankingSort] = useState("puntaje");
       if (mode === "automatic") await automaticPipeline(data);
     } catch (error) {
       setSearches(error.details?.searches || []);
-      setError(controller.current?.signal.aborted ? "Exploración cancelada. Se conservan los resultados parciales recuperados." : error.message);
+      setError(controller.current?.signal.aborted ? "Exploración cancelada. Sólo se conservan las respuestas ya recibidas; la búsqueda en curso no se recupera." : error.message);
     } finally {
       setProgress(""); setLoading(false); controller.current = null;
     }
@@ -293,75 +221,18 @@ const [rankingSort, setRankingSort] = useState("puntaje");
 
   async function verifyPages() {
     if (externalLinks.length === 0) return;
-
-    setVerifying(true);
-    setError("");
-    setVerifiedPages([]);
-    setPageMatches([]);
-    setRanking([]);
-
+    setVerifying(true); setError(""); setRanking([]);
+    const batch = verificationBatch(externalLinks, verificationCursor);
+    const previousPages = batch.start === 0 ? [] : verifiedPages;
     try {
-      const allPages = [];
-      const batchSize = 5;
-
-      for (
-        let i = 0;
-        i < Math.min(externalLinks.length, LIMITS.pages);
-        i += batchSize
-      ) {
-        const batch = externalLinks.slice(
-          i,
-          i + batchSize
-        );
-
-        const response = await fetch(
-          "/api/verify-pages",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              urls: batch,
-            }),
-          }
-        );
-
-        const data = await readResponse(response);
-        const pages = data.results || [];
-
-        allPages.push(...pages);
-        setVerifiedPages([...allPages]);
-      }
-
-      const matchResponse = await fetch(
-        "/api/match-pages",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            ads,
-            pages: allPages,
-          }),
-        }
-      );
-
-      const matchData = await readResponse(
-        matchResponse
-      );
-
+      const result = await post("/api/verify-pages", { urls: batch.urls });
+      const allPages = [...previousPages, ...(result.results || [])];
+      setVerifiedPages(allPages);
+      setVerificationCursor(batch.nextCursor);
+      const matchData = await post("/api/match-pages", { ads, pages: allPages });
       setPageMatches(matchData.matches || []);
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Error al verificar las páginas."
-      );
-    } finally {
-      setVerifying(false);
-    }
+    } catch (error) { setError(error.message); }
+    finally { setVerifying(false); }
   }
 
   async function generateRanking() {
@@ -421,18 +292,8 @@ const filteredRanking = uniqueRanking.filter((offer) => {
   });
   
   
-const sortedRanking = [...filteredRanking].sort((a, b) => {
-    if (rankingSort === "antiguedad") {
-      return (Number(b.ageDays) || 0) - (Number(a.ageDays) || 0);
-    }
-  
-    if (rankingSort === "anuncios") {
-      return (Number(b.adsCount) || 0) - (Number(a.adsCount) || 0);
-    }
-  
-    return (Number(b.score) || 0) - (Number(a.score) || 0);
-  });
-  
+const sortedRanking = sortRanking(filteredRanking, rankingSort);
+const nextPages = verificationBatch(externalLinks, verificationCursor);
 
   function getPageStatusLabel(status) {
     switch (status) {
@@ -487,9 +348,11 @@ const sortedRanking = [...filteredRanking].sort((a, b) => {
       </form>
       <p className="mt-3 text-sm text-slate-400">
         La exploración usa seis búsquedas de ebooks, cursos, plantillas, imprimibles, packs y software; no cubre toda la biblioteca.
-        Máximo 100 anuncios, 5 análisis con IA y 5 páginas por ejecución. El idioma se estima por el texto; al filtrar se excluyen idiomas desconocidos.
+        Hasta 100 anuncios repartidos entre las seis categorías, 5 análisis con IA y 5 páginas por ejecución automática. La verificación manual permite continuar en lotes de 5.
         Los enlaces sin asociación comprobada permanecen como candidatos.
       </p>
+      <p className="mt-2 text-sm text-slate-400">{LANGUAGE_NOTICE}</p>
+      <p className="mt-2 text-sm text-slate-400">{CANCELLATION_NOTICE}</p>
       {progress && <p role="status" className="mt-4 text-cyan-300">{progress}…</p>}
       {warnings.length > 0 && <ul className="mt-4 text-amber-300">{warnings.map((warning, i) => <li key={i}>{warning}</li>)}</ul>}
       {searches.length > 0 && <details className="mt-4 text-sm text-slate-300"><summary>Cobertura y errores por categoría ({searches.length}/6 búsquedas)</summary><ul>{searches.map(search => <li key={search.category}>{search.category}: {search.total} anuncios recuperados{search.error ? ` — Error: ${search.error}` : ""}{search.warnings?.map(w => ` — ${w}`).join("")}</li>)}</ul></details>}
@@ -541,7 +404,7 @@ const sortedRanking = [...filteredRanking].sort((a, b) => {
             >
               {verifying
                 ? "Verificando páginas..."
-                : `Verificar páginas de venta (${Math.min(externalLinks.length, LIMITS.pages)})`}
+                : `${verificationCursor >= externalLinks.length ? "Reiniciar verificación" : verificationCursor > 0 ? "Verificar siguientes páginas" : "Verificar páginas de venta"} (${nextPages.urls.length})`}
             </button>
           )}
 
@@ -570,6 +433,8 @@ const sortedRanking = [...filteredRanking].sort((a, b) => {
             " Todavía no se encontraron páginas para verificar."}
         </p>
       )}
+
+      {externalLinks.length > 0 && <p className="mt-2 text-sm text-slate-400">Páginas procesadas: {verificationCursor}/{externalLinks.length}. Los errores no equivalen a páginas verificadas.</p>}
 
       {/* RANKING PRINCIPAL */}
 
@@ -627,6 +492,7 @@ const sortedRanking = [...filteredRanking].sort((a, b) => {
   }
   className="rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white"
 >
+  <option value="evidencia">Prioridad de evidencia</option>
   <option value="puntaje">Mayor puntaje</option>
   <option value="antiguedad">Mayor antigüedad</option>
   <option value="anuncios">Más anuncios</option>
@@ -853,8 +719,8 @@ const sortedRanking = [...filteredRanking].sort((a, b) => {
 
                     <p className="mt-1 text-xs text-slate-400">
                       {match?.matchStatus ===
-                      "coincidencia_por_dominio"
-                        ? "Coincidencia de dominio encontrada en el anuncio"
+                      "coincidencia_url_y_producto"
+                        ? "URL de producto explícita y coincidencia de nombre verificadas"
                         : "Todavía no hay evidencia suficiente para asociar esta página"}
                     </p>
 

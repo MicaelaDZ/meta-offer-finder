@@ -1,4 +1,6 @@
 
+import { extractPageEvidence } from "./page-evidence.mjs";
+import { searchProfile } from "./search-policy.mjs";
 import { launchBrowser } from "./browser.mjs";
 import { parseMetaText, LIBRARY_MARKER } from "./meta-parser.mjs";
 
@@ -64,7 +66,8 @@ function isExternalDestination(href) {
   }
 }
 
-export async function searchMetaAds({ keyword, country = "AR", language = "all", timeoutMs = 45000, signal }) {
+export async function searchMetaAds({ keyword, country = "AR", language = "all", mode = "manual", timeoutMs = searchProfile(mode).timeoutMs, signal }) {
+  const policy = searchProfile(mode);
   const started = Date.now();
   let browser;
   let timer;
@@ -95,13 +98,13 @@ export async function searchMetaAds({ keyword, country = "AR", language = "all",
 
     await page.goto(url.toString(), {
       waitUntil: "domcontentloaded",
-      timeout: Math.min(12000, timeoutMs),
+      timeout: Math.min(policy.navigationMs, timeoutMs),
     });
 
     await page
       .getByText(LIBRARY_MARKER)
       .first()
-      .waitFor({ timeout: 2000 })
+      .waitFor({ timeout: Math.min(policy.markerMs, timeoutMs) })
       .catch(() => {});
 
       
@@ -109,12 +112,12 @@ const initialAdsCount = await page
 .getByText(LIBRARY_MARKER)
 .count();
 
-for (let i = 0; i < 2; i++) {
+for (let i = 0; i < policy.scrolls; i++) {
 await page.evaluate(() => {
   window.scrollTo(0, document.body.scrollHeight);
 });
 
-await page.waitForTimeout(500);
+await page.waitForTimeout(policy.scrollDelayMs);
 }
 
 await page.evaluate(() => {
@@ -192,11 +195,12 @@ const pageData = await page.evaluate(() => {
       ),
     ];
 
-    const ads = parseMetaText(pageData.rawText);
+    const visibleEvidence = await page.evaluate(extractPageEvidence);
+    const ads = parseMetaText(visibleEvidence.evidenceText).map(ad => ({ ...ad, copyTruncated: Boolean(ad.copyTruncated || visibleEvidence.textTruncated), language: ad.copyTruncated || visibleEvidence.textTruncated ? "unknown" : ad.language }));
     const filtered = ads.filter(ad => language === "all" || ad.language === language).slice(0, 100);
     // Only links explicitly present in retained ad copy survive a language filter.
     const copyLinks = filtered.flatMap(ad => ad.copy?.match(/https?:\/\/[^\s<>]+/g) || []).map(normalizeUrl).filter(isExternalDestination);
-    const candidates = [...new Set(language === "all" ? [...copyLinks, ...externalLinks] : copyLinks)].slice(0, 25);
+    const candidates = [...new Set(language === "all" ? [...copyLinks, ...externalLinks] : copyLinks)].slice(0, mode === "manual" ? 100 : 25);
     return {
       keyword,
       country,

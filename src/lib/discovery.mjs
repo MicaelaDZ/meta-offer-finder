@@ -37,32 +37,65 @@ export function detectLanguage(text) {
   const scores = Object.entries(words).map(([language, list]) => ({ language, score: list.split(' ').filter(word => tokens.has(word)).length })).sort((a, b) => b.score - a.score);
   return scores[0].score >= 3 && scores[0].score - scores[1].score >= 2 ? scores[0].language : 'unknown';
 }
+function observation(ad) {
+  const { observations, discoveryCategories, ...data } = ad;
+  void observations; void discoveryCategories;
+  return data;
+}
+function mergeAd(previous, incoming) {
+  const versions = [...(previous.observations || [observation(previous)]), ...(incoming.observations || [observation(incoming)])];
+  const observations = [...new Map(versions.map(item => [JSON.stringify(item), item])).values()];
+  const ranked = [...observations].sort((a, b) =>
+    Number(Boolean(a.copyTruncated)) - Number(Boolean(b.copyTruncated)) ||
+    String(b.copy || '').length - String(a.copy || '').length ||
+    Object.values(b).filter(Boolean).length - Object.values(a).filter(Boolean).length);
+  const merged = { ...ranked[0] };
+  for (const version of ranked) for (const [key, value] of Object.entries(version)) {
+    if ((merged[key] === null || merged[key] === undefined || merged[key] === '') && value !== null && value !== undefined) merged[key] = value;
+  }
+  const copies = [...new Set(observations.map(item => item.copy).filter(Boolean))];
+  const longest = copies.reduce((best, copy) => copy.length > best.length ? copy : best, '');
+  const advertisers = new Set(observations.map(item => item.advertiser?.trim().toLowerCase()).filter(Boolean));
+  return { ...merged, id: String(incoming.id), observations,
+    evidenceConflict: observations.some(item => item.evidenceConflict) || copies.some(copy => !longest.includes(copy)) || advertisers.size > 1,
+    discoveryCategories: [...new Set([...(previous.discoveryCategories || []), ...(incoming.discoveryCategories || [])])] };
+}
 export function uniqueAds(ads) {
   const unique = new Map();
   for (const ad of ads) {
     if (!ad?.id) continue;
     const id = String(ad.id);
-    const previous = unique.get(id);
-    unique.set(id, previous ? { ...previous, discoveryCategories: [...new Set([...(previous.discoveryCategories || []), ...(ad.discoveryCategories || [])])] } : { ...ad, id });
+    unique.set(id, unique.has(id) ? mergeAd(unique.get(id), ad) : { ...ad, id });
   }
   return [...unique.values()];
+}
+export function categoryQuota(index) {
+  return Math.floor(LIMITS.ads / LIMITS.searches) + Number(index < LIMITS.ads % LIMITS.searches);
 }
 export async function discover(options, search, { signal, now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   const started = now();
   let ads = [];
   const externalLinks = new Set();
   const searches = [];
-  for (const query of discoveryQueries(options)) {
-    if (signal?.aborted || now() - started >= LIMITS.discoveryMs || ads.length >= LIMITS.ads) break;
+  const queries = discoveryQueries(options);
+  for (const [index, query] of queries.entries()) {
+    if (signal?.aborted || now() - started >= LIMITS.discoveryMs) break;
+    const quota = categoryQuota(index);
+    const remainingCategories = queries.length - index;
+    const timeoutMs = Math.max(1, Math.min(LIMITS.searchMs, Math.floor((LIMITS.discoveryMs - (now() - started) - 750 * (remainingCategories - 1)) / remainingCategories)));
     try {
-      const result = await search({ ...options, ...query, timeoutMs: Math.min(LIMITS.searchMs, LIMITS.discoveryMs - (now() - started)), signal });
-      ads = uniqueAds([...ads, ...result.ads.map(ad => ({ ...ad, discoveryCategories: [query.category] }))]).slice(0, LIMITS.ads);
-      for (const url of result.externalLinks || []) if (externalLinks.size < 25) externalLinks.add(url);
-      searches.push({ ...query, total: result.ads.length, warnings: result.warnings || [] });
+      const result = await search({ ...options, ...query, mode: 'automatic', timeoutMs, maxAds: LIMITS.ads, signal });
+      const existingIds = new Set(ads.map(ad => ad.id));
+      const candidates = uniqueAds(result.ads.map(ad => ({ ...ad, discoveryCategories: [query.category] })));
+      const repeated = candidates.filter(ad => existingIds.has(ad.id));
+      const selected = candidates.filter(ad => !existingIds.has(ad.id)).slice(0, quota);
+      ads = uniqueAds([...ads, ...repeated, ...selected]);
+      for (const url of (result.externalLinks || []).slice(0, 4)) externalLinks.add(url);
+      searches.push({ ...query, total: result.ads.length, retained: selected.length, quota, warnings: result.warnings || [] });
     } catch (error) {
-      searches.push({ ...query, total: 0, error: error.message });
+      searches.push({ ...query, total: 0, retained: 0, quota, error: error.message });
     }
-    if (searches.length < LIMITS.searches && ads.length < LIMITS.ads && !signal?.aborted) await pause(750);
+    if (index < queries.length - 1 && !signal?.aborted) await pause(750);
   }
-  return { ...options, ads, total: ads.length, externalLinks: [...externalLinks], searches, partial: searches.length < LIMITS.searches || searches.some(s => s.error || s.warnings.length), limits: LIMITS };
+  return { ...options, ads, total: ads.length, externalLinks: [...externalLinks], searches, partial: searches.length < queries.length || searches.some(s => s.error || s.warnings.length), limits: LIMITS };
 }

@@ -37,29 +37,49 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 ## Descubrimiento automático
 
-La pantalla conserva **Búsqueda manual** y ofrece **Descubrimiento automático** sin palabra clave ni selección de nicho. Elegí país e idioma y presioná **Descubrir productos**. Se consultan seis categorías (ebooks, cursos, plantillas, imprimibles, packs y software), se eliminan IDs repetidos y se ejecutan las etapas existentes de agrupación, análisis, verificación, asociación y ranking. Los botones manuales y los detalles siguen disponibles.
+La pantalla conserva **Búsqueda manual** y ofrece **Descubrimiento automático** sin palabra clave ni selección de nicho. Elegí país e idioma y presioná **Descubrir productos**. Reutiliza agrupación, Ollama, verificación de páginas, asociación y ranking.
 
-- Países iniciales: Argentina, México, España, Colombia, Chile, Perú, Uruguay, Brasil, Estados Unidos y Reino Unido. El país es el filtro de distribución de Meta, no el origen del anunciante.
-- Idiomas iniciales: español, inglés, portugués o todos. Es una estimación conservadora del texto, independiente del idioma de la interfaz de Meta. El filtro excluye textos desconocidos o ambiguos. No garantiza detección perfecta de textos mixtos. Con “Todos”, las consultas usan el idioma habitual del país; no implica cobertura exhaustiva de todos sus idiomas.
-- Se realizan hasta seis búsquedas secuenciales, separadas por 750 ms, con presupuesto de 120 segundos y hasta 100 anuncios únicos. El scraping usa dos desplazamientos por consulta, sin reintentos automáticos. Una sola tarea de navegador por proceso y una pausa de 30 segundos entre descubrimientos evitan acumulaciones locales; no es un limitador distribuido entre servidores.
-- Se analizan hasta cinco representantes con Ollama (8 segundos por solicitud), se verifican hasta cinco páginas (40 segundos totales más arranque del navegador) y se genera un ranking aun si esas etapas fallan. El resto queda sin analizar/verificar; nunca se extrapolan esos resultados a todos los anuncios. Cancelar conserva los resultados de etapas completadas.
-- Las páginas se consideran candidatas. Una coincidencia exacta de dominio en el texto del anuncio es evidencia de asociación, no prueba de que esa sea la landing de ese anuncio o producto. El ranking exige además IDs del mismo grupo y una respuesta HTTP accesible. Al filtrar por idioma sólo se verifican URLs explícitas del texto retenido; los enlaces globales no se atribuyen a ese idioma.
-- La clasificación por reglas busca señales explícitas digitales, de compra y de precio no nulo. Productos físicos, servicios, gratuitos y señales contradictorias no se promocionan como digitales pagos. El resultado sigue siendo un **candidato**, nunca una compra confirmada. Ollama es auxiliar: sus afirmaciones no confirman pagos ni añaden puntos de evidencia.
-- No se calculan ventas, ingresos, ROAS ni rentabilidad. Cantidad y antigüedad son sólo las de los anuncios recuperados. El formato de fecha no reconocido queda sin antigüedad.
+### Exactitud comercial
 
-### Requisitos y desarrollo
+- Un candidato pago necesita una única oferta digital, una acción de compra y un precio positivo ligado al producto en la misma cláusula. Precios anteriores/habituales, regalos, varios productos, contradicciones y texto incompleto permanecen pendientes de revisión. No se toma cualquier precio del anuncio o de la página.
+- El extractor de navegador excluye precios dentro de `del`, `s`, `strike`, texto oculto y estilos computados de tachado. Si el precio anterior está expresado en palabras, la oferta queda pendiente. No se interpretan precios de imágenes, vídeos o estilos de tachado que el DOM no permita identificar: requiere revisión humana.
+- Una landing sólo aporta puntos cuando el anuncio contiene su URL completa de producto, coinciden ruta, parámetros y fragmento, no hay redirección a otra URL, coincide el tipo digital y al menos dos palabras distintivas del nombre del producto con un único `h1` visible. También requiere respuesta HTTP accesible y evidencia actual de pago. Compartir dominio no basta. No se confía en estados ni asociaciones reenviados por el cliente: el ranking los recalcula.
+- La asociación es evidencia conservadora, no prueba de compra, checkout operativo o entrega. Sin URL/nombre suficiente, el anuncio conserva su candidatura y no recibe puntos de la landing. URLs de seguimiento o redirecciones legítimas pueden quedar pendientes.
+- No se calculan ventas, ingresos, ROAS ni rentabilidad. Ollama es auxiliar; sus afirmaciones no confirman pagos ni otorgan puntos. El orden predeterminado prioriza evidencia; sólo cambia si el usuario elige puntaje, antigüedad o cantidad de anuncios.
 
-Usar el checkout existente; no hace falta crear otro worktree. Node.js compatible con Next.js 16 (entorno validado con Node 24), `npm ci`, `npx playwright install chromium`, Ollama en `127.0.0.1:11434` y el modelo `qwen2.5:7b` (`ollama pull qwen2.5:7b`). Iniciar Ollama y luego `npm run dev`. Para probar la interfaz localmente usar el hostname `localhost`; Next.js bloquea orígenes de desarrollo no autorizados como `127.0.0.1` al enlazar el servidor a `0.0.0.0`. El navegador respeta `HTTPS_PROXY`/`HTTP_PROXY` cuando están configurados y mantiene TLS verificado. No se necesitan secretos nuevos para esta implementación.
+### Presupuestos e identidad
 
-La política de red debe permitir las descargas de Playwright, Google Fonts (`fonts.googleapis.com`, `fonts.gstatic.com`), Meta y los destinos que se quieran verificar. El modelo requiere acceso a `registry.ollama.ai` y sus destinos de descarga. Meta puede exigir consentimiento/login, bloquear automatización o cambiar su DOM. En esos casos se muestran errores o advertencias: cero anuncios extraídos **no demuestra** que no existan anuncios. No se resuelven CAPTCHA ni se simulan resultados.
+- Las seis categorías (ebooks, cursos, plantillas, imprimibles, packs y software) tienen cuotas de nuevos IDs de **17/17/17/17/16/16**. Ninguna categoría puede ocupar todo el cupo de 100 anuncios. Cada consulta recibe una porción del tiempo restante para reservar oportunidades a las demás, hasta 18 segundos por consulta y 120 segundos totales. Cancelación, desconexión o un fallo fuera del presupuesto pueden impedir completar todas; se informa cobertura y errores.
+- Se realizan búsquedas secuenciales con pausas de 750 ms. Hay una sola tarea de navegador por proceso y una pausa de 30 segundos entre descubrimientos. No es un limitador distribuido entre servidores.
+- Se conservan la versión más completa de cada ID, sus datos complementarios, categorías y observaciones originales. Versiones contradictorias quedan marcadas para revisión. Las categorías posteriores pueden completar IDs ya encontrados aunque se haya usado su cuota de nuevos anuncios.
+- Agrupar requiere texto completo idéntico y URLs explícitas de producto coincidentes. Sin identidad suficiente, cada ID permanece separado. No se agrupa por introducción, anunciante o dominio. El ranking no unifica productos por URLs sin parámetros ni fusiona grupos distintos por compartir landing.
+- El modo automático realiza hasta cinco análisis con Ollama y verifica hasta cinco páginas. El modo manual permite **continuar en lotes de cinco** y reiniciar después del último lote. Errores de páginas no equivalen a verificaciones exitosas.
+- La búsqueda manual conserva cuatro desplazamientos de 1,5 segundos, hasta 60 segundos de navegación y 15 segundos esperando identificadores, con presupuesto total de 100 segundos. La automática usa dos desplazamientos y esperas menores por su presupuesto entre categorías. Las respuestas están acotadas a 100 anuncios y hasta 100 enlaces manuales; no cubren toda la biblioteca.
+
+### Texto, idiomas y cancelación
+
+- Países iniciales: Argentina, México, España, Colombia, Chile, Perú, Uruguay, Brasil, Estados Unidos y Reino Unido. El país es un filtro de distribución de Meta, no el origen del anunciante.
+- Idiomas: español, inglés, portugués o todos. Es una estimación heurística del texto, independiente del país y de la interfaz de Meta; puede fallar en textos breves o mixtos. Los desconocidos se excluyen al filtrar. “Todos” no filtra, pero las semillas usan el idioma habitual del país y no garantizan cobertura multilingüe.
+- Se conserva el texto de cada sección de anuncio, sin el antiguo corte a once líneas. Más de 20.000 caracteres o un marcador visible de “ver más” se consideran texto incompleto y no habilitan clasificación paga. El límite de extracción de páginas es 100.000 caracteres; si se excede tampoco se habilita evidencia paga. Los formatos de fecha no reconocidos mantienen antigüedad desconocida.
+- Cancelar detiene nuevas solicitudes. **Sólo se conservan respuestas ya recibidas**: los anuncios acumulados en una búsqueda cuya respuesta todavía no llegó no se recuperan al cancelarla.
+
+### Requisitos y comprobaciones
+
+Usar el checkout existente; no hace falta otro worktree. Node.js compatible con Next.js 16 (entorno validado con Node 24), `npm ci`, `npx playwright install chromium`, Ollama en `127.0.0.1:11434` y `ollama pull qwen2.5:7b`. Iniciar Ollama y luego `npm run dev`. Para probar la interfaz usar `localhost`: Next.js bloquea HMR desde orígenes no autorizados como `127.0.0.1` al enlazar a `0.0.0.0`. El navegador respeta `HTTPS_PROXY`/`HTTP_PROXY` y mantiene TLS verificado. No se necesitan secretos nuevos.
+
+La red debe permitir descargas de Playwright, Google Fonts (`fonts.googleapis.com`, `fonts.gstatic.com`), Meta y las landings elegidas. El modelo necesita `registry.ollama.ai` y sus destinos de descarga. Meta puede exigir consentimiento/login, bloquear automatización o cambiar el DOM. Cero anuncios extraídos **no demuestra** ausencia de anuncios. No se resuelven CAPTCHA ni se simulan resultados.
 
 ```bash
-npm test                  # pruebas unitarias sin red
+npm test
 npm run lint
-npm run build             # requiere descargar las fuentes de Google
-npx tsc --noEmit
+npx tsc --noEmit --incremental false
+npm run build
 # Con npm run dev en otro proceso:
-npm run test:integration  # solicitudes a las API locales; ejemplos sintéticos sólo de prueba
+npm run test:integration
+# Sólo para pruebas locales cuando falta el navegador fijado de Playwright:
+TEST_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium npm run test:integration
 ```
 
-No ejecutar build y dev simultáneamente porque comparten `.next`. Guardar exportaciones, capturas y datos reales de investigación fuera del checkout (por ejemplo `/tmp/meta-offer-finder/`); no se incorporan datasets locales ni credenciales al repositorio.
+Las pruebas de integración incluyen solicitudes reales a las API locales, extracción DOM con ejemplos sintéticos y una prueba de interfaz que intercepta respuestas de búsqueda/verificación exclusivamente dentro de esa prueba. **No certifican búsquedas reales de Meta** ni la instalación del Chromium fijado. El ejecutable alternativo sólo afecta a las pruebas; el scraping de la aplicación continúa usando el navegador de Playwright.
+
+No ejecutar build y dev simultáneamente porque comparten `.next`. Guardar capturas, exportaciones y datos reales fuera del checkout (por ejemplo `/tmp/meta-offer-finder/`); no incorporar datasets ni credenciales.

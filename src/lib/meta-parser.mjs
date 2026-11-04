@@ -10,10 +10,12 @@ export function parseMetaText(text) {
     if (!id) continue;
     const lines = section.split('\n').map(line => line.trim()).filter(Boolean);
     const index = lines.findIndex(line => /^(Publicidad|Sponsored|Patrocinado)$/i.test(line));
-    const copy = index >= 0 ? lines.slice(index + 1, index + 12).join(' ').slice(0, 1500) : null;
-    ads.push({ id, advertiser: index > 0 ? lines[index - 1] : null, copy,
+    const fullCopy = index >= 0 ? lines.slice(index + 1).join('\n') : null;
+    const copy = fullCopy?.slice(0, 20000) ?? null;
+    const copyTruncated = Boolean(fullCopy && (fullCopy.length > 20000 || /^(ver m[aá]s|see more|ver mais)$/im.test(fullCopy)));
+    ads.push({ id, advertiser: index > 0 ? lines[index - 1] : null, copy, copyTruncated,
       date: section.match(/(?:En circulación desde el|Started running on|Em veiculação desde)\s+([^\n]+)/i)?.[1] ?? null,
-      language: detectLanguage(copy), sourceUrl: `https://www.facebook.com/ads/library/?id=${id}`,
+      language: copyTruncated ? 'unknown' : detectLanguage(copy), sourceUrl: `https://www.facebook.com/ads/library/?id=${id}`,
       destinationUrl: null, destinationVerified: false });
   }
   return uniqueAds(ads);
