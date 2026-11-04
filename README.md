@@ -37,7 +37,13 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 ## Descubrimiento automático
 
-La pantalla conserva **Búsqueda manual** y ofrece **Descubrimiento automático** sin palabra clave ni selección de nicho. Elegí país e idioma y presioná **Descubrir productos**. Reutiliza agrupación, Ollama, verificación de páginas, asociación y ranking.
+La pantalla principal muestra **Descubridor de productos digitales**, país, idioma y un único botón: **Descubrir oportunidades**. No pide palabras clave ni conocimientos de nichos. Una sola acción recorre las seis categorías, deduplica, agrupa, calcula antigüedad/cantidad, intenta el análisis con IA, verifica páginas, comprueba la asociación de productos y prepara el ranking.
+
+El progreso usa cuatro mensajes: **Buscando anuncios**, **Analizando ofertas**, **Verificando páginas** y **Preparando resultados**. Si Ollama no está disponible o falla, se muestra una advertencia y continúan las etapas de evidencia observable. El ranking no usa respuestas inventadas ni depende de la IA. La interfaz bloquea una segunda ejecución mientras la primera está en curso y permite cancelar con el alcance de retención explicado en pantalla.
+
+Los resultados separan **Candidatos digitales pagos** con landing asociada de **Pendientes de verificación**. Las tarjetas muestran nombre cuando está verificado (o lo indican como pendiente), categoría observable, anunciante, anuncios recuperados, antigüedad, verificación y puntaje. Sólo enlazan una landing cuando el ranking ha comprobado su asociación. El puntaje no representa ventas, ingresos ni rentabilidad.
+
+**Opciones avanzadas**, cerrada inicialmente, conserva la búsqueda manual, los botones de agrupación/antigüedad, IA, verificación por lotes y ranking, los descartados, filtros, orden y diagnósticos. La búsqueda manual usa los selectores de país e idioma de la pantalla principal.
 
 ### Exactitud comercial
 
@@ -65,7 +71,7 @@ La pantalla conserva **Búsqueda manual** y ofrece **Descubrimiento automático*
 
 ### Requisitos y comprobaciones
 
-Usar el checkout existente; no hace falta otro worktree. Node.js compatible con Next.js 16 (entorno validado con Node 24), `npm ci`, `npx playwright install chromium`, Ollama en `127.0.0.1:11434` y `ollama pull qwen2.5:7b`. Iniciar Ollama y luego `npm run dev`. Para probar la interfaz usar `localhost`: Next.js bloquea HMR desde orígenes no autorizados como `127.0.0.1` al enlazar a `0.0.0.0`. El navegador respeta `HTTPS_PROXY`/`HTTP_PROXY` y mantiene TLS verificado. No se necesitan secretos nuevos.
+Usar el checkout existente; no hace falta otro worktree. Node.js compatible con Next.js 16 (entorno validado con Node 24), `npm ci`, `npx playwright install chromium`, Ollama opcional en `127.0.0.1:11434` y `ollama pull qwen2.5:7b` para habilitar el análisis con IA. Iniciar `npm run dev`; sin Ollama se continúa con evidencia observable. Para probar la interfaz usar `localhost`: Next.js bloquea HMR desde orígenes no autorizados como `127.0.0.1` al enlazar a `0.0.0.0`. El navegador respeta `HTTPS_PROXY`/`HTTP_PROXY` y mantiene TLS verificado. No se necesitan secretos nuevos.
 
 La red debe permitir descargas de Playwright, Meta y las landings elegidas. El modelo necesita `registry.ollama.ai` y sus destinos de descarga. Meta puede exigir consentimiento/login, bloquear automatización o cambiar el DOM. Cero anuncios extraídos **no demuestra** ausencia de anuncios. No se resuelven CAPTCHA ni se simulan resultados.
 
@@ -80,6 +86,6 @@ npm run test:integration
 TEST_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium npm run test:integration
 ```
 
-Las pruebas de integración incluyen solicitudes reales a las API locales, extracción DOM con ejemplos sintéticos y una prueba de interfaz que intercepta respuestas de búsqueda/verificación exclusivamente dentro de esa prueba. **No certifican búsquedas reales de Meta** ni la instalación del Chromium fijado. El ejecutable alternativo sólo afecta a las pruebas; el scraping de la aplicación continúa usando el navegador de Playwright.
+Las pruebas de integración incluyen solicitudes reales a las API locales, extracción DOM con ejemplos sintéticos y pruebas de interfaz de una sola acción, IA disponible/no disponible, error de búsqueda, prevención de doble ejecución, cancelación y verificación manual en lotes. Las respuestas de búsqueda, IA y páginas externas se interceptan exclusivamente dentro de esas pruebas; agrupación, asociación y ranking recorren las API reales locales. **No certifican búsquedas reales de Meta** ni la instalación del Chromium fijado. El ejecutable alternativo sólo afecta a las pruebas; el scraping de la aplicación continúa usando el navegador de Playwright.
 
 No ejecutar build y dev simultáneamente porque comparten `.next`. Guardar capturas, exportaciones y datos reales fuera del checkout (por ejemplo `/tmp/meta-offer-finder/`); no incorporar datasets ni credenciales.
