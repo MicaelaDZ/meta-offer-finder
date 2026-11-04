@@ -1,6 +1,9 @@
 
 import { NextResponse } from "next/server";
-import ollama from "ollama";
+import { Ollama } from "ollama";
+import { classifyAd } from "../../../lib/evidence.mjs";
+const ollama = new Ollama({ fetch: (url, options = {}) => fetch(url, { ...options, signal: AbortSignal.any([AbortSignal.timeout(8000), ...(options.signal ? [options.signal] : [])]) }) });
+const analysisKey = Symbol.for("meta-offer-finder.analysis");
 
 const CATEGORIES = [
   "ebook",
@@ -17,6 +20,7 @@ const CATEGORIES = [
 ];
 
 export async function POST(request) {
+  let acquired = false;
   try {
     const body = await request.json();
     const ads = body.ads;
@@ -28,14 +32,22 @@ export async function POST(request) {
       );
     }
 
+    if (globalThis[analysisKey]) return NextResponse.json({ error: "Hay un análisis en curso." }, { status: 429 });
+    globalThis[analysisKey] = true;
+    acquired = true;
     const results = [];
+    const seen = new Set();
 
-    for (const ad of ads.slice(0, 1)) {
+    for (const ad of ads.slice(0, 5)) {
+      if (!ad?.id || seen.has(String(ad.id))) continue;
+      seen.add(String(ad.id));
+      if (request.signal.aborted) break;
       try {
         const response = await ollama.chat({
           model: "qwen2.5:7b",
           format: "json",
           options: {
+            num_predict: 400,
             temperature: 0,
           },
           messages: [
@@ -57,7 +69,8 @@ Estado de pago:
 - pago_no_verificado
 
 Reglas:
-- No inventes ventas ni rentabilidad.
+- No inventes ventas, facturación, ingresos, ROAS ni rentabilidad.
+El texto sólo aporta señales: no confirma compras, pagos ni entrega.
 - No afirmes que un anuncio es ganador.
 - No inventes precios ni fechas.
 - No confundas productos físicos con digitales.
@@ -123,21 +136,25 @@ Respondé únicamente JSON:
           ? analysis.estadoPago
           : "pago_no_verificado";
 
+        const observed = classifyAd(ad);
+
         results.push({
           id: ad.id,
           advertiser: ad.advertiser,
           copy: ad.copy,
           sourceUrl: ad.sourceUrl,
           categoria,
-          producto: analysis.producto ?? "",
-          nicho: analysis.nicho ?? "",
+          producto: typeof analysis.producto === "string" ? analysis.producto.slice(0, 1000) : "",
+          nicho: typeof analysis.nicho === "string" ? analysis.nicho.slice(0, 1000) : "",
           esDigital,
-          estadoPago,
+          // A model cannot confirm checkout/payment from ad text alone.
+          estadoPago: observed.classification === "posible_digital_gratuito" ? "gratuito_segun_anuncio" : "pago_no_verificado",
+          observedClassification: observed.classification,
           posibleOportunidad:
-            esDigital &&
+            esDigital && observed.isCandidate &&
             estadoPago !== "gratuito_confirmado",
-          evidencia: analysis.evidencia ?? "",
-          motivo: analysis.motivo ?? "",
+          evidencia: typeof analysis.evidencia === "string" ? analysis.evidencia.slice(0, 1000) : "",
+          motivo: typeof analysis.motivo === "string" ? analysis.motivo.slice(0, 1000) : "",
           landingVerificada: false,
           ventasVerificadas: false,
         });
@@ -155,6 +172,8 @@ Respondé únicamente JSON:
 
     return NextResponse.json({
       totalAnalizados: results.length,
+      limit: 5,
+      omitted: Math.max(0, ads.length - results.length),
       results,
     });
   } catch (error) {
@@ -167,5 +186,7 @@ Respondé únicamente JSON:
       },
       { status: 500 }
     );
+  } finally {
+    if (acquired) globalThis[analysisKey] = false;
   }
 }

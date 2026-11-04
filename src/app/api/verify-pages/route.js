@@ -1,6 +1,9 @@
 
+import { isIP } from "node:net";
 import { NextResponse } from "next/server";
-import { chromium } from "playwright";
+import { launchBrowser, acquireBrowserWork } from "../../../lib/browser.mjs";
+import { extractPageEvidence } from "../../../lib/page-evidence.mjs";
+import { classifyOffer } from "../../../lib/evidence.mjs";
 
 function isAllowedUrl(value) {
   try {
@@ -13,6 +16,9 @@ function isAllowedUrl(value) {
     const hostname = url.hostname.toLowerCase();
 
     if (
+      isIP(hostname.replace(/^\[|\]$/g, "")) !== 0 ||
+      hostname.endsWith(".local") ||
+      hostname.endsWith(".internal") ||
       hostname === "localhost" ||
       hostname.endsWith(".localhost") ||
       hostname === "127.0.0.1" ||
@@ -28,100 +34,11 @@ function isAllowedUrl(value) {
   }
 }
 
-function detectSignals(text) {
-  const normalized = text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-
-  const digitalWords = [
-    "ebook",
-    "e-book",
-    "recetario digital",
-    "archivo pdf",
-    "formato pdf",
-    "descargable",
-    "descarga digital",
-    "curso online",
-    "curso grabado",
-    "plantilla digital",
-    "acceso inmediato",
-  ];
-
-  const purchaseWords = [
-    "comprar",
-    "agregar al carrito",
-    "añadir al carrito",
-    "anadir al carrito",
-    "finalizar compra",
-    "checkout",
-    "compralo ahora",
-    "compra ahora",
-  ];
-
-  const deliveryWords = [
-    "descarga inmediata",
-    "acceso inmediato",
-    "entrega automatica",
-    "recibiras un email",
-    "recibis un email",
-    "descargar ahora",
-  ];
-
-  
-const physicalPatterns = [
-  /bandejas? de silicona/,
-  /envio gratis.*pagas al recibir/,
-  /pago contra entrega/,
-  /paga al recibir/,
-];
-
-const freeDigitalPatterns = [
-  /recetario digital (?:exclusivo y )?gratuito/,
-  /recetario (?:es )?gratuito/,
-  /pdf gratis/,
-  /descarga gratuita/,
-  /descargar gratis/,
-];
-
-const hasPhysicalSignal = physicalPatterns.some(
-  (pattern) => pattern.test(normalized)
-);
-
-const hasFreeDigitalSignal = freeDigitalPatterns.some(
-  (pattern) => pattern.test(normalized)
-);
-
-  const hasDigitalSignal = digitalWords.some(
-    (word) => normalized.includes(word)
-  );
-
-  const hasPurchaseSignal = purchaseWords.some(
-    (word) => normalized.includes(word)
-  );
-
-  const hasDeliverySignal = deliveryWords.some(
-    (word) => normalized.includes(word)
-  );
-
-  const priceMatches = text.match(
-    /(?:ARS|USD|US\$|\$)\s?[\d.,]+/gi
-  );
-
-  return {
-    hasDigitalSignal,
-    hasPurchaseSignal,
-    hasDeliverySignal,
-    hasPhysicalSignal,
-    hasFreeDigitalSignal,
-    pricesFound: [
-      ...new Set(priceMatches || []),
-    ].slice(0, 10),
-  };
-}
-
 export async function POST(request) {
   let browser;
+  let release;
+  let timer;
+  let abort;
 
   try {
     const body = await request.json();
@@ -137,9 +54,12 @@ export async function POST(request) {
       );
     }
 
-    browser = await chromium.launch({
-      headless: true,
-    });
+    release = acquireBrowserWork();
+    browser = await launchBrowser();
+    const deadline = Date.now() + 40000;
+    abort = () => { void browser.close().catch(() => {}); };
+    timer = setTimeout(abort, 40000);
+    request.signal.addEventListener("abort", abort, { once: true });
 
     const results = [];
 
@@ -154,46 +74,34 @@ export async function POST(request) {
         continue;
       }
 
-      const page = await browser.newPage();
+      if (request.signal.aborted || Date.now() >= deadline) {
+        results.push({ url: inputUrl, status: "error", reason: "Límite de tiempo alcanzado; página no verificada." });
+        continue;
+      }
+      let page;
 
       try {
+        page = await browser.newPage();
+        page.setDefaultTimeout(4000);
+        // Apply the URL guard to redirects and subresources too.
+        await page.route("**/*", route => isAllowedUrl(route.request().url()) ? route.continue() : route.abort());
         const response = await page.goto(inputUrl, {
           waitUntil: "domcontentloaded",
-          timeout: 25000,
+          timeout: Math.max(1, Math.min(12000, deadline - Date.now())),
         });
 
-        await page.waitForTimeout(1500);
+        await page.waitForTimeout(500);
 
         const title = await page.title();
 
-        const text = (
-          await page.locator("body").innerText()
-        ).slice(0, 20000);
-
-        const signals = detectSignals(text);
+        const evidence = await page.evaluate(extractPageEvidence);
+        const text = evidence.evidenceText;
+        const signals = classifyOffer(text, { incomplete: evidence.textTruncated });
 
         const httpStatus = response?.status() ?? null;
 
        
-let status = "pendiente";
-
-if (httpStatus && httpStatus >= 400) {
-  status = "no_accesible";
-} else if (signals.hasPhysicalSignal) {
-  status = "posible_producto_fisico";
-} else if (
-  signals.hasFreeDigitalSignal &&
-  !signals.hasPurchaseSignal
-) {
-  status = "posible_digital_gratuito";
-} else if (
-  signals.hasDigitalSignal &&
-  signals.hasPurchaseSignal &&
-  signals.pricesFound.length > 0
-) {
-  status = "candidato_digital_pago";
-}
-
+const status = httpStatus && httpStatus >= 400 ? "no_accesible" : signals.classification === "sin_evidencia_suficiente" ? "pendiente" : signals.classification;
 
         results.push({
           url: inputUrl,
@@ -202,6 +110,7 @@ if (httpStatus && httpStatus >= 400) {
           httpStatus,
           status,
           ...signals,
+          ...evidence,
           textPreview: text.slice(0, 500),
         });
       } catch (error) {
@@ -211,7 +120,7 @@ if (httpStatus && httpStatus >= 400) {
           reason: error.message,
         });
       } finally {
-        await page.close();
+        await page?.close().catch(() => {});
       }
     }
 
@@ -227,9 +136,12 @@ if (httpStatus && httpStatus >= 400) {
             ? error.message
             : "Error desconocido",
       },
-      { status: 500 }
+      { status: error.status || 500 }
     );
   } finally {
-    await browser?.close();
+    clearTimeout(timer);
+    if (abort) request.signal.removeEventListener("abort", abort);
+    await browser?.close().catch(() => {});
+    release?.();
   }
 }

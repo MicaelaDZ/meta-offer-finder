@@ -15,7 +15,7 @@ export default function Home() {
           </h1>
 
           <p className="mt-3 text-slate-400">
-            Investigá anuncios activos de Meta en Argentina,
+            Investigá anuncios activos de Meta en el país que elijas,
             agrupá ofertas por anunciante y analizá
             posibles productos digitales de venta automática.
           </p>
