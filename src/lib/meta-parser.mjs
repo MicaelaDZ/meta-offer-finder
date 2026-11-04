@@ -1,12 +1,12 @@
 import { detectLanguage, uniqueAds } from './discovery.mjs';
 
 // Meta changes its DOM regularly. Only explicit library identifiers are accepted.
-export const LIBRARY_MARKER = /(?:Identificador de la biblioteca|Library ID|ID da biblioteca):\s*\d+/i;
+export const LIBRARY_MARKER = /(?:Identificador de la biblioteca|Library ID|ID da biblioteca|Identificador da biblioteca)\s*:?\s*\d+/i;
 export function parseMetaText(text) {
-  const sections = String(text).split(/(?=(?:Identificador de la biblioteca|Library ID|ID da biblioteca):\s*\d+)/gi);
+  const sections = String(text).split(/(?=(?:Identificador de la biblioteca|Library ID|ID da biblioteca|Identificador da biblioteca)\s*:?\s*\d+)/gi);
   const ads = [];
   for (const section of sections) {
-    const id = section.match(/^(?:Identificador de la biblioteca|Library ID|ID da biblioteca):\s*(\d+)/i)?.[1];
+    const id = section.match(/^(?:Identificador de la biblioteca|Library ID|ID da biblioteca|Identificador da biblioteca)\s*:?\s*(\d+)/i)?.[1];
     if (!id) continue;
     const lines = section.split('\n').map(line => line.trim()).filter(Boolean);
     const index = lines.findIndex(line => /^(Publicidad|Sponsored|Patrocinado)$/i.test(line));

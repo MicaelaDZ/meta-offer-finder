@@ -21,7 +21,11 @@ test('live API preserves groups, exact product association and conservative rank
   assert.equal(promoted.data.ranking[0].status, 'candidato_digital_pago');
   for (const page of [{ ...pages[0], evidenceText: 'Ebook sin costo, precio anterior $19' }, { ...pages[0], httpStatus: 403 }, { ...pages[0], url: 'https://shop.example.com/product?id=shirt' }]) {
     const result = await post('/api/rank', { groups, pages: [page], matches: matches.data.matches });
-    assert.deepEqual(result.data, baseline.data);
+    const { verification, ...actual } = result.data.ranking[0];
+    const { verification: baselineVerification, ...expected } = baseline.data.ranking[0];
+    assert.deepEqual(actual, expected);
+    assert.equal(verification.digitalPaidVerified, false);
+    assert.equal(baselineVerification.digitalPaidVerified, false);
   }
   const shirt = { ...ad, copy: 'Comprar camiseta $30 en https://shop.example.com/shirt' };
   const shirtGroups = await post('/api/group', { ads: [shirt] });

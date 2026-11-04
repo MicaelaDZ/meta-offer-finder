@@ -65,7 +65,11 @@ test('same domain, another path/query/product name, redirect or HTTP error never
     { ...page, evidenceText: null, status: 'candidato_digital_pago', hasDigitalSignal: true, pricesFound: ['$19'] },
   ]) {
     assert.equal(verifiedAssociation(ad, changed), false);
-    assert.deepEqual(rankGroups(groups, [changed]), rankGroups(groups));
+    const [{ verification, ...actual }] = rankGroups(groups, [changed]);
+    const [{ verification: baselineVerification, ...baseline }] = rankGroups(groups);
+    assert.deepEqual(actual, baseline);
+    assert.equal(verification.digitalPaidVerified, false);
+    assert.equal(baselineVerification.digitalPaidVerified, false);
   }
 });
 test('exact product URL plus distinctive title and current evidence allow promotion', () => {

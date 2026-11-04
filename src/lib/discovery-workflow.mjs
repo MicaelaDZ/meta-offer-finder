@@ -21,7 +21,8 @@ export async function runDiscoveryWorkflow(data, { post, signal, onProgress = ()
     const result = await post('/api/analyze', { ads: representatives.slice(0, LIMITS.analyses) });
     state.analyses = Object.fromEntries((result.results || []).map(item => [item.id, item]));
     onUpdate({ analyses: state.analyses });
-    if ((result.results || []).some(item => item.error)) throw new Error('Uno o más análisis de IA no devolvieron un resultado.');
+    const failed = (result.results || []).find(item => item.error);
+    if (failed) throw new Error(`${failed.errorCode || 'AI_ERROR'}: ${failed.error}`);
   });
   if (data.externalLinks?.length) {
     await step('Verificando páginas', 'Algunas páginas no pudieron verificarse. Sus ofertas quedan pendientes.', async () => {

@@ -1,13 +1,13 @@
 import { normalize } from './discovery.mjs';
 
-const DIGITAL = /\b(e-?book|pdf|recetario digital|curso (?:online|grabado)|online course|video course|plantillas? digitales?|digital templates?|templates? digitais|imprimibles?|printable|planner digital|pack digital|digital bundle|kit digital|software|descarga digital|digital download)\b/;
+const DIGITAL = /\b(e-?book|pdf|recetario digital|curso(?: (?:online|grabado))?|online course|video course|plantillas? digital(?:es)?|digital templates?|templates? digitais|imprimibles?|printable|planner digital|pack digital|digital bundle|kit digital|software|descarga digital|digital download)\b/;
 const MONEY = /(?:ARS|USD|EUR|BRL|US\$|R\$|\$|€)\s*\d(?:[\d.,]*\d)?/gi;
 export function classifyOffer(value, { incomplete = false, evidenceConflict = false } = {}) {
   const original = String(value ?? '');
   const text = normalize(original);
   const kinds = [
-    ['ebook', /\b(e-?book|recetario digital)\b/], ['curso', /\b(curso (?:online|grabado)|online course|video course)\b/],
-    ['plantilla', /\b(plantillas? digitales?|digital templates?|templates? digitais)\b/], ['imprimible', /\b(imprimibles?|printable|planner digital)\b/],
+    ['ebook', /\b(e-?book|recetario digital)\b/], ['curso', /\b(curso(?: (?:online|grabado))?|online course|video course)\b/],
+    ['plantilla', /\b(plantillas? digital(?:es)?|digital templates?|templates? digitais)\b/], ['imprimible', /\b(imprimibles?|printable|planner digital)\b/],
     ['pack', /\b(pack digital|digital bundle|kit digital)\b/], ['software', /\bsoftware\b/],
   ].filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind);
   const productType = kinds.length === 1 ? kinds[0] : kinds.length === 0 && /\bpdf\b/.test(text) ? 'ebook' : null;
@@ -47,5 +47,5 @@ export function classifyOffer(value, { incomplete = false, evidenceConflict = fa
   return { classification, productType, conflict, incomplete, historicalPrice, multipleOffers, hasDigitalSignal, hasPurchaseSignal, hasPaymentSignal, hasPhysicalSignal, hasServiceSignal, hasFreeDigitalSignal, hasDeliverySignal, pricesFound, isCandidate: classification === 'candidato_digital_pago' };
 }
 export function classifyAd(ad) {
-  return classifyOffer(ad?.copy, { incomplete: Boolean(ad?.copyTruncated), evidenceConflict: Boolean(ad?.evidenceConflict) });
+  return classifyOffer(ad?.copy, { incomplete: Boolean(ad?.copyTruncated || ad?.cardScopeUnresolved), evidenceConflict: Boolean(ad?.evidenceConflict) });
 }

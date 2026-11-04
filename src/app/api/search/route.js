@@ -17,6 +17,6 @@ export async function POST(request) {
     release = acquireBrowserWork();
     return NextResponse.json(await searchMetaAds({ ...options, keyword: body.keyword.trim(), signal: request.signal }));
   } catch (error) {
-    return NextResponse.json({ error: error.message }, { status: error.status || 500 });
+    return NextResponse.json({ error: error.message, ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}) }, { status: error.status || 500 });
   } finally { release?.(); }
 }

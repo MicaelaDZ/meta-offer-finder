@@ -5,6 +5,7 @@ import { useRef, useState } from "react";
 import OfferResults, { OfferCard } from "./OfferResults";
 import { runDiscoveryWorkflow } from "../lib/discovery-workflow.mjs";
 import { partitionOffers } from "../lib/result-presentation.mjs";
+import { urlSummary } from "../lib/url-extraction.mjs";
 import { COUNTRIES, LANGUAGES, LIMITS } from "../lib/discovery.mjs";
 import { deduplicateRanking, sortRanking } from "../lib/ranking.mjs";
 import { verificationBatch, CANCELLATION_NOTICE, LANGUAGE_NOTICE } from "../lib/verification.mjs";
@@ -297,6 +298,9 @@ const nextPages = verificationBatch(externalLinks, verificationCursor);
   }
 
   const discarded = partitionOffers(uniqueRanking).discarded;
+  const urlStats = urlSummary(ads);
+  const processedPages = verifiedPages.filter(page => page.lifecycle?.attempted !== false).length;
+  const accessiblePages = verifiedPages.filter(page => page.lifecycle?.accessible ?? (page.httpStatus >= 200 && page.httpStatus < 400)).length;
   return (
     <section>
       <form onSubmit={searchAds} className="flex flex-col gap-4 sm:flex-row sm:items-end" aria-label="Descubrimiento automático">
@@ -334,6 +338,8 @@ const nextPages = verificationBatch(externalLinks, verificationCursor);
           <p className="text-sm text-slate-400">{CANCELLATION_NOTICE}</p>
           <p className="text-sm text-slate-400">El modo automático explora seis categorías, hasta 100 anuncios, 5 análisis con IA y 5 páginas. La verificación manual continúa en lotes de 5. La cantidad y antigüedad de anuncios no confirman ventas.</p>
           {searches.length > 0 && <div><h2 className="font-semibold">Cobertura y errores por categoría ({searches.length}/6 búsquedas)</h2><ul className="text-sm text-slate-400">{searches.map(search => <li key={search.category}>{search.category}: {search.total} anuncios recuperados{search.error ? ` — ${search.error}` : ""}{search.warnings?.map(w => ` — ${w}`).join("")}</li>)}</ul></div>}
+          {ads.length > 0 && <div className="text-sm text-slate-400"><h2 className="font-semibold">Extracción de URLs por anuncio</h2><p>Sin contenedor inequívoco: {urlStats.scope_unresolved}. Sin URL visible: {urlStats.no_visible_url}. URL presente no extraída: {urlStats.url_present_not_extracted}. Extraída: {urlStats.url_extracted}. Meta/social/contacto: {urlStats.meta_or_non_commercial_url}. URLs externas únicas atribuibles: {urlStats.uniqueExternalUrls}.</p></div>}
+          {searches.some(search => search.diagnostic || search.diagnostics?.length) && <div className="text-sm text-slate-400"><h2 className="font-semibold">Diagnóstico técnico de búsquedas</h2><ul>{searches.flatMap(search => (search.diagnostic ? [search.diagnostic] : search.diagnostics || []).map((detail, i) => <li key={`${search.category}-${i}`}>{search.category}: {detail.code}, etapa {detail.stage}{detail.httpStatus ? `, HTTP ${detail.httpStatus}` : ''}{detail.markerCount !== undefined ? `, identificadores ${detail.markerCount}, tarjetas ${detail.cardCount}, contenedores no resueltos ${detail.scopeFailures}` : ''}{detail.elapsedMs !== undefined ? `, ${detail.elapsedMs} ms` : ''}.</li>))}</ul></div>}
           {diagnostics.length > 0 && <div><h2 className="font-semibold">Diagnósticos</h2><ul className="text-sm text-slate-400">{diagnostics.map((detail, i) => <li key={i}>{detail}</li>)}</ul></div>}
           {ranking.length > 0 && <div className="flex flex-wrap gap-3">
             <label>Filtrar oportunidades:<select aria-label="Filtrar oportunidades" value={rankingFilter} onChange={event => setRankingFilter(event.target.value)} className="ml-2 rounded bg-slate-900 p-2"><option value="todos">Todas</option><option value="digitales">Digitales pagos</option><option value="anuncios">Candidatos por anuncio</option><option value="revision">Sin evidencia suficiente</option><option value="otros">Descartados</option></select></label>
@@ -410,7 +416,7 @@ const nextPages = verificationBatch(externalLinks, verificationCursor);
         </p>
       )}
 
-      {externalLinks.length > 0 && <p className="mt-2 text-sm text-slate-400">Páginas procesadas: {verificationCursor}/{externalLinks.length}. Los errores no equivalen a páginas verificadas.</p>}
+      {externalLinks.length > 0 && <p className="mt-2 text-sm text-slate-400">Páginas procesadas: {processedPages}/{externalLinks.length}. Accesibles: {accessiblePages}. Asociadas a productos digitales pagos: {uniqueRanking.filter(offer => offer.verification?.digitalPaidVerified).length}. Lote recorrido: {verificationCursor}/{externalLinks.length}. Los errores no equivalen a páginas verificadas.</p>}
 
 
           {discarded.length > 0 && <section aria-label="Productos descartados"><h2 className="mb-3 text-lg font-semibold">Productos descartados ({discarded.length})</h2><p className="mb-3 text-sm text-slate-400">Señales de producto físico, servicio o recurso gratuito; no se presentan como oportunidades digitales pagas.</p><div className="space-y-3">{discarded.map(offer => <div key={offer.groupId}><p className="text-sm text-slate-400">{getPageStatusLabel(offer.status)}</p><OfferCard offer={offer} group={groups.find(group => group.groupId === offer.groupId)} /></div>)}</div></section>}
@@ -710,6 +716,8 @@ const nextPages = verificationBatch(externalLinks, verificationCursor);
                 <p className="mt-3 text-sm text-slate-300">
                   {ad.copy || "Sin texto"}
                 </p>
+
+                {ad.urlDiagnostics && <p className="mt-2 text-xs text-slate-400">Extracción de URL: {ad.urlDiagnostics.status}. Destinos extraídos: {ad.urlDiagnostics.extracted}. Fuentes inspeccionadas: {ad.urlDiagnostics.visibleTargets}.</p>}
 
                 {analysis && (
                   <div className="mt-4 rounded-lg border border-slate-700 bg-slate-950 p-4">
