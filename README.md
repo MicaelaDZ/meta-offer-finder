@@ -18,7 +18,7 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The application uses local system fonts: Arial/Helvetica for body text and a system monospace stack for code. Builds and browsers do not download fonts from Google or another font provider. Font rendering can vary slightly by operating system.
 
 ## Learn More
 
@@ -67,7 +67,7 @@ La pantalla conserva **Búsqueda manual** y ofrece **Descubrimiento automático*
 
 Usar el checkout existente; no hace falta otro worktree. Node.js compatible con Next.js 16 (entorno validado con Node 24), `npm ci`, `npx playwright install chromium`, Ollama en `127.0.0.1:11434` y `ollama pull qwen2.5:7b`. Iniciar Ollama y luego `npm run dev`. Para probar la interfaz usar `localhost`: Next.js bloquea HMR desde orígenes no autorizados como `127.0.0.1` al enlazar a `0.0.0.0`. El navegador respeta `HTTPS_PROXY`/`HTTP_PROXY` y mantiene TLS verificado. No se necesitan secretos nuevos.
 
-La red debe permitir descargas de Playwright, Google Fonts (`fonts.googleapis.com`, `fonts.gstatic.com`), Meta y las landings elegidas. El modelo necesita `registry.ollama.ai` y sus destinos de descarga. Meta puede exigir consentimiento/login, bloquear automatización o cambiar el DOM. Cero anuncios extraídos **no demuestra** ausencia de anuncios. No se resuelven CAPTCHA ni se simulan resultados.
+La red debe permitir descargas de Playwright, Meta y las landings elegidas. El modelo necesita `registry.ollama.ai` y sus destinos de descarga. Meta puede exigir consentimiento/login, bloquear automatización o cambiar el DOM. Cero anuncios extraídos **no demuestra** ausencia de anuncios. No se resuelven CAPTCHA ni se simulan resultados.
 
 ```bash
 npm test
