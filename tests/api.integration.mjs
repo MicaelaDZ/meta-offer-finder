@@ -34,3 +34,17 @@ test('live API preserves groups, exact product association and conservative rank
   assert.equal(shirtRank.data.ranking[0].score, 0);
   for (const [path, body] of [['/api/search', { keyword: 'ebook', country: 'ZZ' }], ['/api/discover', { country: 'AR', language: 'invalid' }], ['/api/search', { keyword: '' }]]) assert.equal((await post(path, body)).status, 400);
 });
+
+test('source disabled by default returns an explicit refusal without results or local cooldown', async () => {
+  const options = { country: 'AR', language: 'es' };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await post('/api/discover', options);
+    assert.equal(result.status, 503);
+    assert.equal(result.data.sourceDiagnostic.code, 'META_SOURCE_DISABLED');
+    assert.equal(result.data.searches.length, 1);
+    assert.deepEqual(result.data.ads, []);
+    assert.deepEqual(result.data.externalLinks, []);
+  }
+  const keyword = await post('/api/search', { ...options, keyword: 'ebook' });
+  assert.equal(keyword.data.diagnostic.code, 'META_SOURCE_DISABLED');
+});

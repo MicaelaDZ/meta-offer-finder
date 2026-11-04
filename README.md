@@ -35,7 +35,17 @@ The easiest way to deploy your Next.js app is to use the [Vercel Platform](https
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
 
-## Descubrimiento automático
+## Estado del acceso a Meta
+
+La consulta web automatizada de la aplicación queda pausada por defecto. `META_AUTOMATED_ACCESS_AUTHORIZED=1` se reserva para instalaciones que ya tengan permiso expreso de Meta. La variable no concede permiso ni cambia el navegador para sortear bloqueos. La búsqueda por palabra clave dentro de la app usa el mismo acceso automatizado. Cuando la fuente está pausada o rechaza el acceso, la interfaz ofrece un enlace para abrir la Biblioteca con el país seleccionado y consultarla directamente en el navegador.
+
+En la ejecución reportada, Chromium recibió 403 durante la navegación, antes de leer anuncios o ejecutar selectores. Una sesión normal de Chrome puede mostrar los anuncios y recibir una respuesta distinta. El 403 por sí solo no identifica si el rechazo salió de Meta o de un intermediario de red. El diagnóstico distingue la negativa HTTP, los errores de conexión y las páginas de acceso, sin registrar credenciales ni parámetros de la URL. La exploración se detiene al recibir una negativa de acceso o un límite de solicitudes. Conserva lo que ya recuperó. El 429 emitido por la app indica una búsqueda simultánea o la pausa local, y es distinto de un 429 recibido durante la navegación.
+
+La [API oficial de la Biblioteca](https://www.facebook.com/ads/library/api/) exige verificar identidad y ubicación, registrar una cuenta de desarrollador y crear una app para acceder con token. Cubre anuncios políticos o sobre temas sociales globalmente y anuncios de cualquier tipo entregados en la UE o el Reino Unido. No cubre el catálogo comercial para Argentina. [Meta requiere permiso para la recolección automatizada](https://about.fb.com/news/2021/04/how-we-combat-scraping/).
+
+Para Argentina, la alternativa inmediata es buscar en la Biblioteca desde Chrome. La alternativa para el proyecto sería importar por lote evidencia que el usuario haya reunido manualmente o datos de un proveedor autorizado y usar la app para verificar landings y ordenar candidatos. Esa importación todavía no está implementada. Para recuperar el objetivo de un solo clic hace falta una fuente autorizada con cobertura comercial argentina y una muestra real que permita probar cobertura y calidad antes de integrar.
+
+## Descubrimiento automático con fuente autorizada
 
 La pantalla principal muestra **Descubridor de productos digitales**, país, idioma y un único botón: **Descubrir oportunidades**. No pide palabras clave ni conocimientos de nichos. Una sola acción recorre las seis categorías, deduplica, agrupa, calcula antigüedad/cantidad, intenta el análisis con IA, verifica páginas, comprueba la asociación de productos y prepara el ranking.
 
@@ -71,13 +81,14 @@ Los resultados separan **Candidatos digitales pagos** con landing asociada de **
 
 ### Requisitos y comprobaciones
 
-Usar el checkout existente; no hace falta otro worktree. Node.js compatible con Next.js 16 (entorno validado con Node 24), `npm ci`, `npx playwright install chromium`, Ollama opcional en `127.0.0.1:11434` y `ollama pull qwen2.5:7b` para habilitar el análisis con IA. Iniciar `npm run dev`; sin Ollama se continúa con evidencia observable. Para probar la interfaz usar `localhost`: Next.js bloquea HMR desde orígenes no autorizados como `127.0.0.1` al enlazar a `0.0.0.0`. El navegador respeta `HTTPS_PROXY`/`HTTP_PROXY` y mantiene TLS verificado. No se necesitan secretos nuevos.
+Usar el checkout existente; no hace falta otro worktree. Node.js compatible con Next.js 16 (entorno validado con Node 24), `npm ci`, `npx playwright install chromium`, Ollama opcional en `127.0.0.1:11434` y `ollama pull qwen2.5:7b` para habilitar el análisis con IA. Iniciar `npm run dev`; sin Ollama se continúa con evidencia observable. Para probar la interfaz usar `localhost`: Next.js bloquea HMR desde orígenes no autorizados como `127.0.0.1` al enlazar a `0.0.0.0`. El navegador respeta `HTTPS_PROXY`/`HTTP_PROXY` y mantiene TLS verificado.
 
 La red debe permitir descargas de Playwright, Meta y las landings elegidas. El modelo necesita `registry.ollama.ai` y sus destinos de descarga. Meta puede exigir consentimiento/login, bloquear automatización o cambiar el DOM. Cero anuncios extraídos **no demuestra** ausencia de anuncios. No se resuelven CAPTCHA ni se simulan resultados.
 
 ```bash
 npm test
 npm run lint
+npx next typegen
 npx tsc --noEmit --incremental false
 npm run build
 # Con npm run dev en otro proceso:
@@ -107,17 +118,16 @@ Ollama conserva el timeout de 8 segundos por solicitud. El primer timeout, fallo
 ### Cómo comprobarlo en tu computadora
 
 ```bash
-git fetch origin
-git switch codex/improve-landing-extraction
 npm ci
 npx playwright install chromium
 npm test
 npm run lint
+npx next typegen
 npx tsc --noEmit --incremental false
 npm run build
 # En otra terminal, después del build:
 npm run dev
-# Diagnóstico de las dos búsquedas reportadas, una por vez:
+# Diagnóstico de la fuente (sólo consulta Meta si está autorizada):
 node scripts/diagnose-meta.mjs --category ebooks --country AR --language es
 node scripts/diagnose-meta.mjs --category cursos --country AR --language es
 # Con el servidor activo:

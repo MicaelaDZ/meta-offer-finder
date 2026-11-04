@@ -10,13 +10,23 @@ import { uniqueAds } from './discovery.mjs';
 
 export async function searchMetaAds({ keyword, country = 'AR', language = 'all', mode = 'manual', timeoutMs = searchProfile(mode).timeoutMs, signal }, { launch = launchBrowser, beforeNavigate = async () => {} } = {}) {
   const policy = searchProfile(mode), started = Date.now();
-  let browser, timer, abort;
+  let browser, timer, abort, browserVersion;
   let stage = 'launch', expired = false;
   try {
-    if (signal?.aborted) throw new Error('Search cancelled');
+    if (signal?.aborted) {
+      const error = new Error('Search cancelled');
+      error.diagnostic = diagnostic('CANCELLED', stage);
+      throw error;
+    }
+    if (process.env.META_AUTOMATED_ACCESS_AUTHORIZED !== '1') {
+      const error = new Error('Meta source disabled');
+      error.diagnostic = diagnostic('META_SOURCE_DISABLED', 'authorization');
+      throw error;
+    }
     const url = new URL('https://www.facebook.com/ads/library/');
     for (const [key, value] of Object.entries({ active_status: 'active', ad_type: 'all', country, locale: 'es_LA', q: keyword, search_type: 'keyword_unordered' })) url.searchParams.set(key, value);
     browser = await launch();
+    browserVersion = browser.version();
     abort = () => { void browser.close().catch(() => {}); };
     timer = setTimeout(() => { expired = true; abort(); }, Math.max(1, timeoutMs - (Date.now() - started)));
     signal?.addEventListener('abort', abort, { once: true });
@@ -26,9 +36,16 @@ export async function searchMetaAds({ keyword, country = 'AR', language = 'all',
     stage = 'navigate';
     const response = await page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: Math.min(policy.navigationMs, timeoutMs) });
     const httpStatus = response?.status() ?? null;
+    const finalUrl = new URL(page.url());
+    const navigation = { httpStatus, finalHost: finalUrl.host, redirected: finalUrl.href !== url.href };
+    if (httpStatus === 401 || httpStatus === 403 || httpStatus === 429) {
+      const error = new Error('Meta navigation refused');
+      error.diagnostic = diagnostic(httpStatus === 429 ? 'META_RATE_LIMITED' : 'META_ACCESS_REFUSED', stage, navigation);
+      throw error;
+    }
     if (httpStatus >= 400) {
       const error = new Error('HTTP failure');
-      error.diagnostic = diagnostic('HTTP_ERROR', stage, { httpStatus }); throw error;
+      error.diagnostic = diagnostic('HTTP_ERROR', stage, navigation); throw error;
     }
     stage = 'wait_identifiers';
     await page.getByText(LIBRARY_MARKER).first().waitFor({ timeout: Math.min(policy.markerMs, timeoutMs) }).catch(() => {});
@@ -67,8 +84,8 @@ export async function searchMetaAds({ keyword, country = 'AR', language = 'all',
       initialAdsCount, loadedAdsCount: dom.markerCount, diagnostics, urlDiagnostics: urlSummary(ads),
       warnings: !records.length ? [diagnostics[0].message] : dom.scopeFailures ? ['Algunos anuncios no tienen un contenedor inequívoco; sus CTA no se atribuyeron por seguridad.'] : [] };
   } catch (error) {
-    const details = { elapsedMs: Date.now() - started, budgetMs: timeoutMs };
-    const safe = expired ? diagnostic('TIMEOUT', stage, details) : error.diagnostic || failureDiagnostic(error, stage, details);
+    const details = { elapsedMs: Date.now() - started, budgetMs: timeoutMs, ...(browserVersion ? { browserVersion } : {}) };
+    const safe = expired ? diagnostic('TIMEOUT', stage, details) : error.diagnostic ? { ...error.diagnostic, ...details } : failureDiagnostic(error, stage, details);
     const reported = new Error(`${safe.code}: ${safe.message}`);
     reported.diagnostic = safe;
     throw reported;

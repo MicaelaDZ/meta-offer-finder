@@ -1,5 +1,5 @@
 import { adUrls, urlSummary } from './url-extraction.mjs';
-import { failureDiagnostic } from './scrape-diagnostics.mjs';
+import { failureDiagnostic, stopsMetaSearch } from './scrape-diagnostics.mjs';
 export const COUNTRIES = { AR: 'Argentina', MX: 'México', ES: 'España', CO: 'Colombia', CL: 'Chile', PE: 'Perú', UY: 'Uruguay', BR: 'Brasil', US: 'Estados Unidos', GB: 'Reino Unido' };
 export const LANGUAGES = { all: 'Todos', es: 'Español', en: 'Inglés', pt: 'Portugués' };
 export const LIMITS = { searches: 6, ads: 100, searchMs: 18000, discoveryMs: 120000, pages: 5, analyses: 5 };
@@ -84,6 +84,7 @@ export async function discover(options, search, { signal, now = Date.now, pause 
   const externalLinks = new Set();
   const searches = [];
   const queries = discoveryQueries(options);
+  let sourceDiagnostic;
   for (const [index, query] of queries.entries()) {
     if (signal?.aborted || now() - started >= LIMITS.discoveryMs) break;
     const quota = categoryQuota(index);
@@ -99,9 +100,14 @@ export async function discover(options, search, { signal, now = Date.now, pause 
       for (const url of (result.externalLinks || []).slice(0, 100)) { if (externalLinks.size < 100) externalLinks.add(url); }
       searches.push({ ...query, total: result.ads.length, retained: selected.length, quota, diagnostics: result.diagnostics || [], warnings: result.warnings || [] });
     } catch (error) {
-      searches.push({ ...query, total: 0, retained: 0, quota, diagnostic: error.diagnostic || failureDiagnostic(error, "search"), error: error.message });
+      const detail = error.diagnostic || failureDiagnostic(error, "search");
+      searches.push({ ...query, total: 0, retained: 0, quota, diagnostic: detail, error: error.message });
+      if (stopsMetaSearch(detail)) {
+        sourceDiagnostic = detail;
+        break;
+      }
     }
     if (index < queries.length - 1 && !signal?.aborted) await pause(750);
   }
-  return { ...options, ads, total: ads.length, externalLinks: [...new Set([...ads.flatMap(adUrls), ...externalLinks])].slice(0, 100), urlDiagnostics: urlSummary(ads), searches, partial: searches.length < queries.length || searches.some(s => s.error || s.warnings.length), limits: LIMITS };
+  return { ...options, ads, total: ads.length, externalLinks: [...new Set([...ads.flatMap(adUrls), ...externalLinks])].slice(0, 100), urlDiagnostics: urlSummary(ads), searches, ...(sourceDiagnostic ? { sourceDiagnostic } : {}), partial: searches.length < queries.length || searches.some(s => s.error || s.warnings.length), limits: LIMITS };
 }

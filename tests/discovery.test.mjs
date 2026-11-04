@@ -69,3 +69,18 @@ test('discovery stops at ad budget, elapsed budget and cancellation', async () =
   const canceled = await discover({ country: 'AR', language: 'all' }, search, { signal: AbortSignal.abort() });
   assert.equal(canceled.searches.length, 0);
 });
+
+test('an access refusal stops further categories and preserves previous results', async () => {
+  let calls = 0;
+  const result = await discover({ country: 'AR', language: 'es' }, async () => {
+    if (++calls === 1) return { ads: [{ id: '123' }] };
+    throw Object.assign(new Error('Access refused'), {
+      diagnostic: { code: 'META_ACCESS_REFUSED', stage: 'navigate', httpStatus: 403 },
+    });
+  }, { pause: async () => {} });
+  assert.equal(calls, 2);
+  assert.equal(result.searches.length, 2);
+  assert.equal(result.sourceDiagnostic.httpStatus, 403);
+  assert.equal(result.total, 1);
+  assert.equal(result.partial, true);
+});
