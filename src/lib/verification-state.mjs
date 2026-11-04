@@ -1,0 +1,16 @@
+import { adUrls } from './url-extraction.mjs';
+import { associationReason, pageSignals, verifiedAssociation } from './association.mjs';
+export const STAGE_LABELS = { urlFound: 'URL encontrada', pageDownloaded: 'Página descargada', pageAccessible: 'Página accesible', productAssociated: 'Asociada al producto', digitalEvidence: 'Evidencia digital', paymentEvidence: 'Evidencia de pago actual', digitalPaidVerified: 'Producto digital pago verificado por evidencia' };
+const REASONS = { SCOPE_UNRESOLVED: 'No se pudo delimitar la tarjeta del anuncio; sus destinos no se atribuyen con seguridad.', URL_NOT_FOUND: 'El anuncio no tiene una URL externa visible.', URL_NOT_EXTRACTED: 'Hay una señal de URL, pero no se pudo extraer un destino atribuible.', VERIFICATION_NOT_ATTEMPTED: 'La URL todavía no se procesó; puede estar fuera del lote actual de cinco.', PAGE_NOT_ACCESSIBLE: 'No se pudo acceder al contenido de la página.', AD_EVIDENCE_INSUFFICIENT: 'El anuncio tiene evidencia incompleta o contradictoria.', URL_NOT_ATTRIBUTED_TO_AD: 'La URL no está atribuida a este anuncio.', REDIRECT_NOT_VERIFIED: 'La redirección no tiene una cadena de navegación verificable.', PRODUCT_TYPE_MISMATCH: 'El tipo de producto de la página no coincide con el anuncio.', PRODUCT_NAME_MISMATCH: 'No hay coincidencia suficiente entre el producto anunciado y el nombre de la página.', DIGITAL_EVIDENCE_MISSING: 'La página no aporta evidencia suficiente de producto digital.', PAYMENT_EVIDENCE_MISSING: 'No hay un precio o pago actual ligado inequívocamente al producto.' };
+export function verificationState(ad, pages) {
+  const urls = adUrls(ad);
+  const relevant = pages.filter(page => urls.includes(page.url));
+  const page = relevant.find(item => verifiedAssociation(ad, item)) || relevant.find(item => item.lifecycle?.accessible || item.httpStatus >= 200 && item.httpStatus < 400) || relevant[0];
+  const signals = page ? pageSignals(page) : null;
+  const accessible = Boolean(page && (page.lifecycle?.accessible ?? (page.httpStatus >= 200 && page.httpStatus < 400)));
+  const associated = accessible && !associationReason(ad, page);
+  const state = { urlFound: urls.length > 0, pageDownloaded: Boolean(page?.lifecycle?.downloaded ?? page?.httpStatus), pageAccessible: accessible,
+    productAssociated: Boolean(associated), digitalEvidence: Boolean(accessible && signals?.hasDigitalSignal), paymentEvidence: Boolean(accessible && signals?.hasPaymentSignal), digitalPaidVerified: Boolean(page && verifiedAssociation(ad, page)) };
+  const code = state.digitalPaidVerified ? null : !urls.length ? ad.urlDiagnostics?.status === 'url_present_not_extracted' ? 'URL_NOT_EXTRACTED' : ad.cardScopeUnresolved ? 'SCOPE_UNRESOLVED' : 'URL_NOT_FOUND' : !page || page.lifecycle?.attempted === false ? 'VERIFICATION_NOT_ATTEMPTED' : !accessible ? page.diagnostic?.code || 'PAGE_NOT_ACCESSIBLE' : associationReason(ad, page) || (!signals.hasDigitalSignal ? 'DIGITAL_EVIDENCE_MISSING' : 'PAYMENT_EVIDENCE_MISSING');
+  return { ...state, reasonCode: code, reason: code === 'HTTP_ERROR' && page?.httpStatus ? `La página respondió HTTP ${page.httpStatus}.` : code ? REASONS[code] || page?.diagnostic?.message || REASONS.PAGE_NOT_ACCESSIBLE : null };
+}

@@ -1,8 +1,8 @@
 
 import { NextResponse } from "next/server";
 import { Ollama } from "ollama";
+import { aiFailure, analyzeBatch } from "../../../lib/ai-failure.mjs";
 import { classifyAd } from "../../../lib/evidence.mjs";
-const ollama = new Ollama({ fetch: (url, options = {}) => fetch(url, { ...options, signal: AbortSignal.any([AbortSignal.timeout(8000), ...(options.signal ? [options.signal] : [])]) }) });
 const analysisKey = Symbol.for("meta-offer-finder.analysis");
 
 const CATEGORIES = [
@@ -35,14 +35,8 @@ export async function POST(request) {
     if (globalThis[analysisKey]) return NextResponse.json({ error: "Hay un análisis en curso." }, { status: 429 });
     globalThis[analysisKey] = true;
     acquired = true;
-    const results = [];
-    const seen = new Set();
-
-    for (const ad of ads.slice(0, 5)) {
-      if (!ad?.id || seen.has(String(ad.id))) continue;
-      seen.add(String(ad.id));
-      if (request.signal.aborted) break;
-      try {
+    const ollama = new Ollama({ fetch: (url, options = {}) => fetch(url, { ...options, signal: AbortSignal.any([request.signal, AbortSignal.timeout(8000), ...(options.signal ? [options.signal] : [])]) }) });
+    const results = await analyzeBatch(ads, async ad => {
         const response = await ollama.chat({
           model: "qwen2.5:7b",
           format: "json",
@@ -138,7 +132,7 @@ Respondé únicamente JSON:
 
         const observed = classifyAd(ad);
 
-        results.push({
+        return {
           id: ad.id,
           advertiser: ad.advertiser,
           copy: ad.copy,
@@ -157,18 +151,8 @@ Respondé únicamente JSON:
           motivo: typeof analysis.motivo === "string" ? analysis.motivo.slice(0, 1000) : "",
           landingVerificada: false,
           ventasVerificadas: false,
-        });
-      } catch (error) {
-        results.push({
-          id: ad.id,
-          advertiser: ad.advertiser,
-          categoria: "desconocido",
-          esDigital: false,
-          posibleOportunidad: false,
-          error: error.message,
-        });
-      }
-    }
+        };
+    }, request.signal);
 
     return NextResponse.json({
       totalAnalizados: results.length,
@@ -179,10 +163,7 @@ Respondé únicamente JSON:
   } catch (error) {
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Error desconocido",
+        error: aiFailure(error, request.signal.aborted).message,
       },
       { status: 500 }
     );

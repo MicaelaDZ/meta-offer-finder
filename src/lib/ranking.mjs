@@ -1,3 +1,5 @@
+import { verificationState } from './verification-state.mjs';
+import { inferProduct } from './product-inference.mjs';
 import { uniqueAds } from "./discovery.mjs";
 import { adGroupKey } from "./identity.mjs";
 import { classifyAd } from './evidence.mjs';
@@ -43,7 +45,7 @@ export function rankGroups(groups, pages = []) {
       age: canScore ? ageScore(group.ageDays) : 0, ads: canScore ? countScore(ads.length) : 0, association: page ? 10 : 0 };
     return { groupId: group.groupId, advertiser: group.advertiser, product: page?.productTitle || null,
       url: page?.finalUrl || page?.url || null, status, score: Object.values(breakdown).reduce((sum, value) => sum + value, 0),
-      adSignals, adsCount: ads.length, ageDays: group.ageDays, oldestAdDate: group.oldestAdDate,
+      adSignals, inferredProductName: inferProduct(representative).probableName, nameInferred: !page && inferProduct(representative).nameInferred, category: inferProduct(representative).category, verification: verificationState(representative, pages), urlDiagnostics: representative.urlDiagnostics || null, adsCount: ads.length, ageDays: group.ageDays, oldestAdDate: group.oldestAdDate,
       hasDigitalSignal: Boolean(signals?.hasDigitalSignal), hasPurchaseSignal: Boolean(signals?.hasPaymentSignal),
       hasDeliverySignal: Boolean(signals?.hasDeliverySignal), pricesFound: signals?.pricesFound || [], scoreBreakdown: breakdown };
   }));

@@ -1,224 +1,80 @@
+import { extractPageEvidence } from './page-evidence.mjs';
+import { extractMetaCards } from './meta-dom.mjs';
+import { searchProfile } from './search-policy.mjs';
+import { launchBrowser } from './browser.mjs';
+import { parseMetaText, LIBRARY_MARKER } from './meta-parser.mjs';
+import { extractAdUrls, adUrls, urlSummary } from './url-extraction.mjs';
+import { diagnostic, failureDiagnostic } from './scrape-diagnostics.mjs';
+import { inferProduct } from './product-inference.mjs';
+import { uniqueAds } from './discovery.mjs';
 
-import { extractPageEvidence } from "./page-evidence.mjs";
-import { searchProfile } from "./search-policy.mjs";
-import { launchBrowser } from "./browser.mjs";
-import { parseMetaText, LIBRARY_MARKER } from "./meta-parser.mjs";
-
-function normalizeUrl(href) {
-  if (!href) return null;
-
+export async function searchMetaAds({ keyword, country = 'AR', language = 'all', mode = 'manual', timeoutMs = searchProfile(mode).timeoutMs, signal }, { launch = launchBrowser, beforeNavigate = async () => {} } = {}) {
+  const policy = searchProfile(mode), started = Date.now();
+  let browser, timer, abort;
+  let stage = 'launch', expired = false;
   try {
-    const url = new URL(
-      href,
-      "https://www.facebook.com"
-    );
-
-    // Algunos enlaces de Meta redirigen a una URL externa.
-    if (
-      url.hostname === "l.facebook.com" ||
-      url.hostname === "lm.facebook.com"
-    ) {
-      const destination = url.searchParams.get("u");
-
-      if (destination) {
-        return normalizeUrl(destination);
+    if (signal?.aborted) throw new Error('Search cancelled');
+    const url = new URL('https://www.facebook.com/ads/library/');
+    for (const [key, value] of Object.entries({ active_status: 'active', ad_type: 'all', country, locale: 'es_LA', q: keyword, search_type: 'keyword_unordered' })) url.searchParams.set(key, value);
+    browser = await launch();
+    abort = () => { void browser.close().catch(() => {}); };
+    timer = setTimeout(() => { expired = true; abort(); }, Math.max(1, timeoutMs - (Date.now() - started)));
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+    const page = await browser.newPage({ locale: 'es-AR' });
+    await beforeNavigate(page);
+    stage = 'navigate';
+    const response = await page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: Math.min(policy.navigationMs, timeoutMs) });
+    const httpStatus = response?.status() ?? null;
+    if (httpStatus >= 400) {
+      const error = new Error('HTTP failure');
+      error.diagnostic = diagnostic('HTTP_ERROR', stage, { httpStatus }); throw error;
+    }
+    stage = 'wait_identifiers';
+    await page.getByText(LIBRARY_MARKER).first().waitFor({ timeout: Math.min(policy.markerMs, timeoutMs) }).catch(() => {});
+    const initialAdsCount = await page.getByText(LIBRARY_MARKER).count();
+    stage = 'scroll';
+    for (let i = 0; i < policy.scrolls; i++) {
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(policy.scrollDelayMs);
+    }
+    stage = 'extract';
+    const dom = await page.evaluate(extractMetaCards);
+    const context = { httpStatus, markerCount: dom.markerCount, cardCount: dom.cards.length, scopeFailures: dom.scopeFailures, elapsedMs: Date.now() - started };
+    if (!dom.markerCount && dom.challenge) {
+      const error = new Error('Meta access gate');
+      error.diagnostic = diagnostic(dom.challenge.toUpperCase(), stage, context); throw error;
+    }
+    const records = [];
+    for (const card of dom.cards) {
+      for (const ad of parseMetaText(card.text).filter(ad => ad.id === card.id)) {
+        const truncated = Boolean(ad.copyTruncated || card.truncated);
+        records.push({ ...ad, copyTruncated: truncated, language: truncated ? 'unknown' : ad.language, ...extractAdUrls(card, ad.copy || ''), inferredProduct: inferProduct(ad) });
       }
     }
-
-    if (
-      url.protocol !== "https:" &&
-      url.protocol !== "http:"
-    ) {
-      return null;
+    // Retain ads whose card boundary is unknown, but never attach page-wide CTAs.
+    const visible = await page.evaluate(extractPageEvidence);
+    const scopedIds = new Set(records.map(ad => ad.id));
+    for (const ad of parseMetaText(visible.evidenceText).filter(ad => !scopedIds.has(ad.id))) {
+      records.push({ ...ad, cardScopeUnresolved: true, copyTruncated: Boolean(ad.copyTruncated || visible.textTruncated), ...extractAdUrls({ id: ad.id, scope: 'unknown' }, ad.copy || ''), inferredProduct: inferProduct(ad) });
     }
-
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
-function isExternalDestination(href) {
-  const normalized = normalizeUrl(href);
-
-  if (!normalized) return false;
-
-  try {
-    const hostname = new URL(normalized)
-      .hostname.toLowerCase();
-
-      const excludedDomains = [
-        "facebook.com",
-        "instagram.com",
-        "meta.com",
-        "fb.com",
-        "fb.me",
-        "metastatus.com",
-      ];
-
-    return !excludedDomains.some(
-      (domain) =>
-        hostname === domain ||
-        hostname.endsWith(`.${domain}`)
-    );
-  } catch {
-    return false;
-  }
-}
-
-export async function searchMetaAds({ keyword, country = "AR", language = "all", mode = "manual", timeoutMs = searchProfile(mode).timeoutMs, signal }) {
-  const policy = searchProfile(mode);
-  const started = Date.now();
-  let browser;
-  let timer;
-  let abort;
-  try {
-    if (signal?.aborted) throw new Error("Búsqueda cancelada.");
-    const url = new URL(
-      "https://www.facebook.com/ads/library/"
-    );
-
-    url.searchParams.set("active_status", "active");
-    url.searchParams.set("ad_type", "all");
-    url.searchParams.set("country", country);
-    url.searchParams.set("locale", "es_LA");
-    url.searchParams.set("q", keyword);
-    url.searchParams.set(
-      "search_type",
-      "keyword_unordered"
-    );
-
-    browser = await launchBrowser();
-    abort = () => { void browser.close().catch(() => {}); };
-    timer = setTimeout(abort, Math.max(1, timeoutMs - (Date.now() - started)));
-    signal?.addEventListener("abort", abort, { once: true });
-    if (signal?.aborted) abort();
-
-    const page = await browser.newPage({ locale: "es-AR" });
-
-    await page.goto(url.toString(), {
-      waitUntil: "domcontentloaded",
-      timeout: Math.min(policy.navigationMs, timeoutMs),
-    });
-
-    await page
-      .getByText(LIBRARY_MARKER)
-      .first()
-      .waitFor({ timeout: Math.min(policy.markerMs, timeoutMs) })
-      .catch(() => {});
-
-      
-const initialAdsCount = await page
-.getByText(LIBRARY_MARKER)
-.count();
-
-for (let i = 0; i < policy.scrolls; i++) {
-await page.evaluate(() => {
-  window.scrollTo(0, document.body.scrollHeight);
-});
-
-await page.waitForTimeout(policy.scrollDelayMs);
-}
-
-await page.evaluate(() => {
-window.scrollTo(0, 0);
-});
-
-const loadedAdsCount = await page
-.getByText(LIBRARY_MARKER)
-.count();
-
-    // Recuperamos texto y enlaces de la página.
-   
-const pageData = await page.evaluate(() => {
-  const rawText =
-    document.body?.innerText || "";
-
-  const links = Array.from(
-    document.querySelectorAll("a[href]")
-  ).map((anchor) => ({
-    href: anchor.href,
-    text: (anchor.innerText || "")
-      .trim()
-      .slice(0, 200),
-  }));
-
-  const buttons = Array.from(
-    document.querySelectorAll(
-      'a, button, [role="button"]'
-    )
-  )
-    .filter((element) => {
-      const text = (
-        element.innerText ||
-        element.getAttribute("aria-label") ||
-        ""
-      ).trim().toLowerCase();
-
-      return [
-        "comprar",
-        "más información",
-        "mas informacion",
-        "ver más",
-        "ver mas",
-        "descargar",
-        "registrarte",
-      ].some((word) => text.includes(word));
-    })
-    .slice(0, 100)
-    .map((element) => ({
-      tag: element.tagName,
-      text: (
-        element.innerText ||
-        element.getAttribute("aria-label") ||
-        ""
-      )
-        .trim()
-        .slice(0, 120),
-      href: element.getAttribute("href"),
-      dataHref: element.getAttribute("data-href"),
-      role: element.getAttribute("role"),
-    }));
-
-  return { rawText, links, buttons };
-});
-
-
-    // Por ahora conservamos los enlaces externos
-    // como candidatos, sin asignarlos a un anuncio
-    // si no podemos comprobar la asociación.
-    const externalLinks = [
-      ...new Set(
-        pageData.links
-          .map((link) => normalizeUrl(link.href))
-          .filter(isExternalDestination)
-      ),
-    ];
-
-    const visibleEvidence = await page.evaluate(extractPageEvidence);
-    const ads = parseMetaText(visibleEvidence.evidenceText).map(ad => ({ ...ad, copyTruncated: Boolean(ad.copyTruncated || visibleEvidence.textTruncated), language: ad.copyTruncated || visibleEvidence.textTruncated ? "unknown" : ad.language }));
-    const filtered = ads.filter(ad => language === "all" || ad.language === language).slice(0, 100);
-    // Only links explicitly present in retained ad copy survive a language filter.
-    const copyLinks = filtered.flatMap(ad => ad.copy?.match(/https?:\/\/[^\s<>]+/g) || []).map(normalizeUrl).filter(isExternalDestination);
-    const candidates = [...new Set(language === "all" ? [...copyLinks, ...externalLinks] : copyLinks)].slice(0, mode === "manual" ? 100 : 25);
-    return {
-      keyword,
-      country,
-      language,
-      total: filtered.length,
-      ads: filtered,
-      warnings: ads.length === 0 ? ["No se pudieron extraer anuncios. Meta puede haber mostrado consentimiento, un bloqueo o un formato no reconocido; no se confirma ausencia de anuncios."] : language !== "all" ? ["Filtro de idioma estimado: textos desconocidos excluidos; se verifican sólo URLs explícitas de los anuncios retenidos."] : [],
-      initialAdsCount,
-loadedAdsCount,
-
-      // Diagnóstico para el próximo paso.
-      externalLinks: candidates,
-      externalLinksCount: candidates.length,
-      buttonDiagnostics: pageData.buttons,
-    };
+    const ads = uniqueAds(records).filter(ad => language === 'all' || ad.language === language).slice(0, 100);
+    context.parsedAds = records.length;
+    context.adsWithoutCopy = records.filter(ad => !ad.copy).length;
+    const diagnostics = [{ ...diagnostic(records.length ? 'EXTRACTION_COMPLETE' : dom.noResults ? 'NO_RESULTS' : dom.markerCount ? 'PARSE_FAILED' : 'MARKERS_NOT_FOUND', stage, context), urls: urlSummary(ads) }];
+    const externalLinks = [...new Set(ads.flatMap(adUrls))].slice(0, 100);
+    return { keyword, country, language, total: ads.length, ads, externalLinks, externalLinksCount: externalLinks.length,
+      initialAdsCount, loadedAdsCount: dom.markerCount, diagnostics, urlDiagnostics: urlSummary(ads),
+      warnings: !records.length ? [diagnostics[0].message] : dom.scopeFailures ? ['Algunos anuncios no tienen un contenedor inequívoco; sus CTA no se atribuyeron por seguridad.'] : [] };
+  } catch (error) {
+    const details = { elapsedMs: Date.now() - started, budgetMs: timeoutMs };
+    const safe = expired ? diagnostic('TIMEOUT', stage, details) : error.diagnostic || failureDiagnostic(error, stage, details);
+    const reported = new Error(`${safe.code}: ${safe.message}`);
+    reported.diagnostic = safe;
+    throw reported;
   } finally {
     clearTimeout(timer);
-    if (abort) signal?.removeEventListener("abort", abort);
-    await browser?.close();
+    if (abort) signal?.removeEventListener('abort', abort);
+    await browser?.close().catch(() => {});
   }
 }

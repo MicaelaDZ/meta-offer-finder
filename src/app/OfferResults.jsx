@@ -1,19 +1,23 @@
+import { STAGE_LABELS } from '../lib/verification-state.mjs';
 import { CATEGORY_LABELS, associatedLanding, partitionOffers } from '../lib/result-presentation.mjs';
 
 export function OfferCard({ offer, group }) {
   const landing = associatedLanding(offer);
   return (
     <article className="rounded-xl border border-slate-700 bg-slate-900 p-5">
-      <h3 className="text-lg font-semibold">{offer.product || 'Nombre del producto pendiente de verificar'}</h3>
+      <h3 className="text-lg font-semibold">{offer.product || offer.inferredProductName || 'Nombre del producto pendiente de verificar'}</h3>
+      {!offer.product && offer.inferredProductName && <p className="mt-1 text-xs text-amber-200">Nombre inferido del anuncio; no verificado en la landing.</p>}
       {!offer.product && group?.exampleCopy && <p className="mt-2 text-sm text-slate-400">Anuncio: «{group.exampleCopy.slice(0, 180)}»</p>}
       <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-        <div><dt className="text-slate-400">Categoría</dt><dd>{CATEGORY_LABELS[offer.adSignals?.productType] || 'Sin determinar'}</dd></div>
+        <div><dt className="text-slate-400">Categoría</dt><dd>{CATEGORY_LABELS[offer.category || offer.adSignals?.productType] || 'Sin determinar'}</dd></div>
         <div><dt className="text-slate-400">Anunciante</dt><dd>{offer.advertiser || 'No identificado'}</dd></div>
         <div><dt className="text-slate-400">Anuncios observados</dt><dd>{offer.adsCount ?? 'Desconocido'}</dd></div>
         <div><dt className="text-slate-400">Antigüedad observada</dt><dd>{offer.ageDays == null ? 'Desconocida' : `${offer.ageDays} días`}</dd></div>
-        <div><dt className="text-slate-400">Estado de verificación</dt><dd>{landing ? 'Landing asociada; señales de pago observadas' : 'Pendiente de verificación del producto y su landing'}</dd></div>
+        <div><dt className="text-slate-400">Estado de verificación</dt><dd>{offer.verification?.digitalPaidVerified ? 'Producto digital pago verificado por evidencia observable' : landing ? 'Landing asociada; señales de pago observadas' : 'Pendiente de verificación del producto y su landing'}</dd></div>
         <div><dt className="text-slate-400">Puntaje de evidencia</dt><dd className="font-semibold text-cyan-300">{Number.isFinite(offer.score) ? `${offer.score}/100` : "No disponible"}</dd></div>
       </dl>
+      {offer.verification?.reason && <p className="mt-3 text-sm text-amber-200">Pendiente: {offer.verification.reason}</p>}
+      {offer.verification && <details className="mt-3 text-sm text-slate-400"><summary>Etapas de verificación</summary><ul>{Object.entries(STAGE_LABELS).map(([key, label]) => <li key={key}>{label}: {offer.verification[key] ? 'Sí' : 'No'}</li>)}</ul></details>}
       {landing && <a href={landing} target="_blank" rel="noopener noreferrer" className="mt-4 inline-block text-cyan-300 hover:underline">Ver landing asociada ↗</a>}
     </article>
   );

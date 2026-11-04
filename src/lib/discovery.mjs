@@ -1,3 +1,5 @@
+import { adUrls, urlSummary } from './url-extraction.mjs';
+import { failureDiagnostic } from './scrape-diagnostics.mjs';
 export const COUNTRIES = { AR: 'Argentina', MX: 'México', ES: 'España', CO: 'Colombia', CL: 'Chile', PE: 'Perú', UY: 'Uruguay', BR: 'Brasil', US: 'Estados Unidos', GB: 'Reino Unido' };
 export const LANGUAGES = { all: 'Todos', es: 'Español', en: 'Inglés', pt: 'Portugués' };
 export const LIMITS = { searches: 6, ads: 100, searchMs: 18000, discoveryMs: 120000, pages: 5, analyses: 5 };
@@ -45,19 +47,23 @@ function observation(ad) {
 function mergeAd(previous, incoming) {
   const versions = [...(previous.observations || [observation(previous)]), ...(incoming.observations || [observation(incoming)])];
   const observations = [...new Map(versions.map(item => [JSON.stringify(item), item])).values()];
-  const ranked = [...observations].sort((a, b) =>
+  const credible = observations.some(item => !item.cardScopeUnresolved) ? observations.filter(item => !item.cardScopeUnresolved) : observations;
+  const ranked = [...credible].sort((a, b) =>
     Number(Boolean(a.copyTruncated)) - Number(Boolean(b.copyTruncated)) ||
     String(b.copy || '').length - String(a.copy || '').length ||
     Object.values(b).filter(Boolean).length - Object.values(a).filter(Boolean).length);
   const merged = { ...ranked[0] };
   for (const version of ranked) for (const [key, value] of Object.entries(version)) {
+    if (['cardScopeUnresolved', 'copyTruncated', 'evidenceConflict'].includes(key)) continue;
     if ((merged[key] === null || merged[key] === undefined || merged[key] === '') && value !== null && value !== undefined) merged[key] = value;
   }
-  const copies = [...new Set(observations.map(item => item.copy).filter(Boolean))];
+  const copies = [...new Set(credible.map(item => item.copy).filter(Boolean))];
   const longest = copies.reduce((best, copy) => copy.length > best.length ? copy : best, '');
-  const advertisers = new Set(observations.map(item => item.advertiser?.trim().toLowerCase()).filter(Boolean));
-  return { ...merged, id: String(incoming.id), observations,
-    evidenceConflict: observations.some(item => item.evidenceConflict) || copies.some(copy => !longest.includes(copy)) || advertisers.size > 1,
+  const advertisers = new Set(credible.map(item => item.advertiser?.trim().toLowerCase()).filter(Boolean));
+  const urlEvidence = [...new Map(credible.flatMap(item => item.urlEvidence || []).map(item => [JSON.stringify(item), item])).values()];
+  return { ...merged, id: String(incoming.id), observations, urlEvidence,
+    ...(urlEvidence.length ? { urlDiagnostics: { ...(merged.urlDiagnostics || {}), status: 'url_extracted', extracted: new Set(urlEvidence.map(item => item.url)).size } } : {}),
+    evidenceConflict: credible.some(item => item.evidenceConflict) || copies.some(copy => !longest.includes(copy)) || advertisers.size > 1,
     discoveryCategories: [...new Set([...(previous.discoveryCategories || []), ...(incoming.discoveryCategories || [])])] };
 }
 export function uniqueAds(ads) {
@@ -90,12 +96,12 @@ export async function discover(options, search, { signal, now = Date.now, pause 
       const repeated = candidates.filter(ad => existingIds.has(ad.id));
       const selected = candidates.filter(ad => !existingIds.has(ad.id)).slice(0, quota);
       ads = uniqueAds([...ads, ...repeated, ...selected]);
-      for (const url of (result.externalLinks || []).slice(0, 4)) externalLinks.add(url);
-      searches.push({ ...query, total: result.ads.length, retained: selected.length, quota, warnings: result.warnings || [] });
+      for (const url of (result.externalLinks || []).slice(0, 100)) { if (externalLinks.size < 100) externalLinks.add(url); }
+      searches.push({ ...query, total: result.ads.length, retained: selected.length, quota, diagnostics: result.diagnostics || [], warnings: result.warnings || [] });
     } catch (error) {
-      searches.push({ ...query, total: 0, retained: 0, quota, error: error.message });
+      searches.push({ ...query, total: 0, retained: 0, quota, diagnostic: error.diagnostic || failureDiagnostic(error, "search"), error: error.message });
     }
     if (index < queries.length - 1 && !signal?.aborted) await pause(750);
   }
-  return { ...options, ads, total: ads.length, externalLinks: [...externalLinks], searches, partial: searches.length < queries.length || searches.some(s => s.error || s.warnings.length), limits: LIMITS };
+  return { ...options, ads, total: ads.length, externalLinks: [...new Set([...ads.flatMap(adUrls), ...externalLinks])].slice(0, 100), urlDiagnostics: urlSummary(ads), searches, partial: searches.length < queries.length || searches.some(s => s.error || s.warnings.length), limits: LIMITS };
 }
