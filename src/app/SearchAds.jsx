@@ -17,6 +17,7 @@ export default function SearchAds() {
   const [language, setLanguage] = useState("all");
   const [progress, setProgress] = useState("");
   const [warnings, setWarnings] = useState([]);
+  const [sourceUnavailable, setSourceUnavailable] = useState(false);
   const [diagnostics, setDiagnostics] = useState([]);
   const operation = useRef(false);
   const [searches, setSearches] = useState([]);
@@ -78,6 +79,7 @@ const [rankingSort, setRankingSort] = useState("evidencia");
     if (!response.ok) {
       const error = new Error(data.error || `Error HTTP ${response.status}`);
       error.details = data;
+      error.status = response.status;
       throw error;
     }
 
@@ -109,6 +111,7 @@ const [rankingSort, setRankingSort] = useState("evidencia");
     operation.current = true;
     controller.current = new AbortController();
     setLoading(true); setManualResults(manual);
+    setSourceUnavailable(false);
     setError(""); setWarnings([]); setDiagnostics([]); setSearches([]);
     setAds([]); setGroups([]); setAnalyses({}); setExternalLinks([]);
     setVerificationCursor(0); setVerifiedPages([]); setPageMatches([]); setRanking([]); setSearched(false);
@@ -120,7 +123,8 @@ const [rankingSort, setRankingSort] = useState("evidencia");
       setExternalLinks(data.externalLinks || []);
       setSearches(data.searches || []);
       setDiagnostics(data.warnings || []);
-      if (data.searches?.some(search => search.error)) setWarnings(["Algunas búsquedas no pudieron completarse. Conservamos los resultados disponibles."]);
+      if (data.sourceDiagnostic) setSourceUnavailable(true);
+      if (data.searches?.some(search => search.error)) setWarnings([data.sourceDiagnostic?.message || "Algunas búsquedas no pudieron completarse. Conservamos los resultados disponibles."]);
       setSearched(true);
       if (!manual) await runDiscoveryWorkflow(data, {
         post, signal: controller.current.signal, onProgress: setProgress, onUpdate: updateWorkflow,
@@ -132,7 +136,11 @@ const [rankingSort, setRankingSort] = useState("evidencia");
     } catch (error) {
       if (error.details?.searches) setSearches(error.details.searches);
       setDiagnostics(previous => [...previous, error.message]);
-      setError(controller.current?.signal.aborted ? "Exploración cancelada. Sólo se conservan las respuestas ya recibidas; la búsqueda en curso no se recupera." : "No se pudo completar la búsqueda. Revisá el detalle en Opciones avanzadas e intentá nuevamente.");
+      const source = error.details?.sourceDiagnostic || error.details?.diagnostic;
+      if (source) setSourceUnavailable(true);
+      setError(controller.current?.signal.aborted
+        ? "Exploración cancelada. Sólo se conservan las respuestas ya recibidas; la búsqueda en curso no se recupera."
+        : source?.message || (error.status === 429 ? error.message : "No se pudo completar la búsqueda. Revisá el detalle en Opciones avanzadas."));
     } finally {
       setProgress(""); setLoading(false); controller.current = null; operation.current = false;
     }
@@ -322,6 +330,9 @@ const nextPages = verificationBatch(externalLinks, verificationCursor);
         <p className="mt-3 text-xs text-slate-400">{CANCELLATION_NOTICE}</p>
       </div>}
       {error && <p role="alert" className="mt-4 rounded-lg bg-red-950 p-4 text-red-300">{error}</p>}
+      {sourceUnavailable && <p className="mt-4 text-sm text-slate-300">
+        Podés consultar los anuncios manualmente en <a className="text-cyan-300 underline" href={`https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country}`} target="_blank" rel="noreferrer">la Biblioteca de anuncios de Meta</a>.
+      </p>}
       {warnings.length > 0 && <aside aria-label="Advertencias" className="mt-4 text-sm text-amber-200"><ul className="space-y-2">{warnings.map((warning, i) => <li key={i}>{warning}</li>)}</ul></aside>}
       {ranking.length > 0 && <OfferResults offers={sortedRanking} groups={groups} />}
       {searched && !loading && !ranking.length && <p role="status" className="mt-6 text-slate-300">{ads.length === 0 ? "No se recuperaron anuncios en esta exploración. Esto no confirma que no existan ofertas." : manualResults ? "Búsqueda manual completada. Podés continuar el análisis en Opciones avanzadas." : "Los anuncios recuperados están disponibles en Opciones avanzadas. No se pudo preparar un ranking automático."}</p>}
@@ -333,7 +344,7 @@ const nextPages = verificationBatch(externalLinks, verificationCursor);
             <input aria-label="Palabra clave" type="text" required value={keyword} onChange={event => setKeyword(event.target.value)} maxLength={100} disabled={busy} placeholder="Ej: recetario digital" className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-4 py-3" />
             <button type="submit" disabled={busy} className="rounded-lg border border-cyan-600 px-5 py-3 disabled:opacity-50">Buscar</button>
           </form>
-          <p className="text-sm text-slate-400">La búsqueda manual usa el país y el idioma seleccionados arriba.</p>
+          <p className="text-sm text-slate-400">La búsqueda por palabra clave también usa acceso automatizado y aplica el país y el idioma seleccionados arriba.</p>
           <p className="text-sm text-slate-400">{LANGUAGE_NOTICE}</p>
           <p className="text-sm text-slate-400">{CANCELLATION_NOTICE}</p>
           <p className="text-sm text-slate-400">El modo automático explora seis categorías, hasta 100 anuncios, 5 análisis con IA y 5 páginas. La verificación manual continúa en lotes de 5. La cantidad y antigüedad de anuncios no confirman ventas.</p>

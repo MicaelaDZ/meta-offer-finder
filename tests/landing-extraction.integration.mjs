@@ -8,6 +8,8 @@ import { searchMetaAds } from '../src/lib/meta-search.mjs';
 import { verifyLanding } from '../src/lib/landing-verification.mjs';
 import { verifiedAssociation, pageSignals } from '../src/lib/association.mjs';
 import { verificationState } from '../src/lib/verification-state.mjs';
+// These provider tests intercept every browser request before navigation.
+process.env.META_AUTOMATED_ACCESS_AUTHORIZED = '1';
 const launch = () => chromium.launch({ headless: true, ...(process.env.TEST_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.TEST_CHROMIUM_EXECUTABLE_PATH } : {}) });
 const card = (id, target = '', copy = 'Comprar curso Huerta Urbana por $19 para tus plantas con una guía') => `<article><span>Library ID: ${id}</span><div>Editorial</div><div>Sponsored</div><p>${copy}</p>${target}</article>`;
 
@@ -43,7 +45,8 @@ test('provider recovers 55 distinct CTA URLs with Spanish filtering, without pri
 
 test('provider distinguishes navigation HTTP errors, login/consent and unrecognized empty markup', async () => {
   for (const [html, status, code] of [
-    ['Blocked', 403, 'HTTP_ERROR'],
+    ['Blocked', 403, 'META_ACCESS_REFUSED'],
+    ['Rate limited', 429, 'META_RATE_LIMITED'],
     ['<form><input type="password"></form>', 200, 'LOGIN_REQUIRED'],
     ['<div role="dialog">Consentimiento de cookies</div>', 200, 'CONSENT_REQUIRED'],
     ['<div>Unknown markup</div>', 200, 'MARKERS_NOT_FOUND'],

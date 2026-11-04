@@ -8,8 +8,10 @@ export function acquireBrowserWork(discovery = false) {
     throw error;
   }
   state.busy = true;
-  if (discovery) state.lastDiscovery = Date.now();
-  return () => { state.busy = false; };
+  return ({ cooldown = true } = {}) => {
+    if (discovery && cooldown) state.lastDiscovery = Date.now();
+    state.busy = false;
+  };
 }
 export async function launchBrowser() {
   // Playwright does not inherit the HTTP proxy for browser navigation.
